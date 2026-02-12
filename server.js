@@ -68,6 +68,8 @@ function runStmt(stmtSql, params = []) {
 function insertAndGetId(stmtSql, params = []) {
   if (params && params.length) db.run(stmtSql, params);
   else db.run(stmtSql);
+  // persist DB to file after insert
+  exportAndSave();
   const res = db.exec('SELECT last_insert_rowid() as id');
   if (res && res[0] && res[0].values && res[0].values[0]) return res[0].values[0][0];
   return null;
