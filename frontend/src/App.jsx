@@ -80,6 +80,10 @@ function App() {
     return true
   })
 
+  if (!isAuthenticated) {
+    return <Login onLogin={handleLogin} />
+  }
+
   
 
   return (
