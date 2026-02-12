@@ -101,6 +101,12 @@ initSqlJs().then((SQLlib) => {
       role TEXT DEFAULT 'user',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );`);
+    // ensure unique ISBNs (NULLs allowed)
+    try {
+      db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_books_isbn ON books(isbn);');
+    } catch (e) {
+      // ignore if index fails for any reason
+    }
     // sample books
     const samples = [
       ['Der kleine Prinz','Antoine de Saint-Exupéry','Kinderbuch','978315000001'],
@@ -114,6 +120,10 @@ initSqlJs().then((SQLlib) => {
     }
     exportAndSave();
   }
+  // ensure unique ISBN index exists (allowing multiple NULLs)
+  try {
+    db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_books_isbn ON books(isbn);');
+  } catch (e) {}
 
   // Routes
   app.get('/', (req, res) => {
@@ -129,6 +139,12 @@ initSqlJs().then((SQLlib) => {
       res.status(500).json({ error: 'DB error' });
     }
   });
+
+  function adminMiddleware(req, res, next) {
+    if (!req.user) return res.status(401).json({ error: 'Missing Authorization' });
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
+    next();
+  }
 
   function authMiddleware(req, res, next) {
     const header = req.headers.authorization;
@@ -146,13 +162,29 @@ initSqlJs().then((SQLlib) => {
     }
   }
 
-  app.post('/books', authMiddleware, (req, res) => {
+  // Add book (admin only). title, author and isbn are required. Prevent duplicate ISBNs.
+  app.post('/books', authMiddleware, adminMiddleware, (req, res) => {
     const { title, author, genre, isbn } = req.body;
-    if (!title || !author) return res.status(400).json({ error: 'title and author required' });
+    if (!title || !author || !isbn) return res.status(400).json({ error: 'title, author and isbn required' });
     try {
+      const existing = getRow('SELECT id FROM books WHERE isbn = ?', [isbn]);
+      if (existing) return res.status(409).json({ error: 'Book with this ISBN already exists' });
       const id = insertAndGetId('INSERT INTO books (title, author, genre, isbn) VALUES (?, ?, ?, ?)', [title, author, genre || null, isbn || null]);
       const row = getRow('SELECT id, title, author, genre, isbn, created_at FROM books WHERE id = ?', [id]);
       res.status(201).json(row);
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: 'DB error' });
+    }
+  });
+
+  // Delete book (admin only)
+  app.delete('/books/:id', authMiddleware, adminMiddleware, (req, res) => {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ error: 'Invalid id' });
+    try {
+      runStmt('DELETE FROM books WHERE id = ?', [id]);
+      res.status(204).send();
     } catch (err) {
       console.error(err);
       res.status(500).json({ error: 'DB error' });

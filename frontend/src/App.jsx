@@ -2,6 +2,7 @@
 import React, { useEffect, useState } from 'react'
 import Filter from './components/Filter'
 import BookList from './components/BookList'
+import AddBook from './components/AddBook'
 import Login from './components/Login'
 import './App.css'
 
@@ -98,6 +99,9 @@ function App() {
         </header>
 
         <div className="topbar-filters">
+          {user && user.role === 'admin' && (
+            <AddBook onAdd={() => fetchBooks()} />
+          )}
           <Filter filters={filters} onChange={handleFilterChange} onClear={clearFilters} />
         </div>
       </div>
@@ -105,7 +109,7 @@ function App() {
       <main className="content">
         <section className="list">
           <p className="api-msg">{message}</p>
-          <BookList books={filtered} />
+          <BookList books={filtered} isAdmin={user && user.role === 'admin'} onDelete={() => fetchBooks()} />
         </section>
       </main>
     </div>

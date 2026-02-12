@@ -17,3 +17,4 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 -- Sample books (only insert if table empty should be done by the app on startup)
+
