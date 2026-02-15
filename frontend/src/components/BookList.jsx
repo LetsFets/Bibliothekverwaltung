@@ -8,7 +8,7 @@ function isFuture(value) {
   return date.getTime() > Date.now()
 }
 
-export default function BookList({ books, isAdmin, onDelete, onReserve, currentUser, onBorrow, onReturn }) {
+export default function BookList({ books, isAdmin, onDelete, onReserve, onUnreserve, currentUser, onBorrow, onReturn }) {
   if (!books || books.length === 0) {
     return <p>Keine Bücher gefunden.</p>
   }
@@ -58,17 +58,17 @@ export default function BookList({ books, isAdmin, onDelete, onReserve, currentU
             <td>{b.genre}</td>
             <td>{b.isbn}</td>
             <td>
-              <BookStatus book={b} onReserve={onReserve} currentUser={currentUser} />
+              <BookStatus book={b} onReserve={onReserve} onUnreserve={onUnreserve} currentUser={currentUser} />
             </td>
             <td>
               {isAdmin && (
                 <div className="action-stack">
                   {isFuture(b.borrowed_until) ? (
-                    <button onClick={() => handleReturn(b)}>Rueckgabe</button>
+                    <button onClick={() => handleReturn(b)}>Rückgabe</button>
                   ) : (
-                    <button onClick={() => handleBorrow(b)}>Ausleihen (2 Wochen)</button>
+                    <button onClick={() => handleBorrow(b)}>Ausleihen</button>
                   )}
-                  <button onClick={() => handleDelete(b.id)}>Loeschen</button>
+                  <button onClick={() => handleDelete(b.id)}>Löschen</button>
                 </div>
               )}
             </td>

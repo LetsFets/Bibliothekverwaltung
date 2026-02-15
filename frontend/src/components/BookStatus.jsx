@@ -18,7 +18,7 @@ function formatDate(value) {
   return date.toLocaleDateString('de-DE')
 }
 
-export default function BookStatus({ book, onReserve, currentUser }) {
+export default function BookStatus({ book, onReserve, onUnreserve, currentUser }) {
   const borrowedActive = isFuture(book.borrowed_until)
   const reservedActive = isFuture(book.reserved_until)
   const reservedByMe = reservedActive && currentUser && book.reserved_by === currentUser.id
@@ -32,8 +32,9 @@ export default function BookStatus({ book, onReserve, currentUser }) {
       : `Reserviert bis ${formatDate(book.reserved_until)}`
   }
 
-  const canReserve = !!onReserve && !reservedActive
-  const reserveLabel = borrowedActive ? 'Vormerken' : 'Reservieren (2 Wochen)'
+  const canReserve = !!onReserve && !reservedActive && !borrowedActive
+  const canPreorder = !!onReserve && !reservedActive && borrowedActive
+  const reserveLabel = borrowedActive ? 'Vormerken' : 'Reservieren'
 
   return (
     <div className="status-block">
@@ -42,10 +43,10 @@ export default function BookStatus({ book, onReserve, currentUser }) {
       </div>
       {borrowedActive && reservedActive && (
         <div className="status-note">
-          Reservierung aktiv bis {formatDate(book.reserved_until)} (üblicherweise 1 Woche nach Rückgabe)
+          Reservierung aktiv bis {formatDate(book.reserved_until)}
         </div>
       )}
-      {canReserve && (
+      {(canReserve || canPreorder) && (
         <button type="button" onClick={() => onReserve(book)}>
           {reserveLabel}
         </button>
@@ -53,8 +54,13 @@ export default function BookStatus({ book, onReserve, currentUser }) {
       {!canReserve && reservedActive && !reservedByMe && (
         <div className="status-note">Bereits reserviert</div>
       )}
-      {!canReserve && reservedActive && reservedByMe && (
+      {!canReserve && reservedActive && reservedByMe && !borrowedActive && (
         <div className="status-note">Deine Reservierung ist aktiv</div>
+      )}
+      {reservedByMe && onUnreserve && (
+        <button type="button" onClick={() => onUnreserve(book)} className="btn-small">
+          Aufheben
+        </button>
       )}
     </div>
   )

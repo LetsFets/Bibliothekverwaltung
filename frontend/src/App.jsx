@@ -113,6 +113,25 @@ function App() {
     }
   }
 
+  async function handleUnreserve(book) {
+    try {
+      const token = localStorage.getItem('token')
+      const res = await fetch(`http://localhost:5000/books/${book.id}/unreserve`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        alert(err.error || 'Aufheben fehlgeschlagen')
+        return
+      }
+      await res.json()
+      fetchBooks()
+    } catch (err) {
+      alert('Netzwerkfehler')
+    }
+  }
+
   function handleLogin(data) {
     // data: { token, user }
     localStorage.setItem('token', data.token)
@@ -130,11 +149,16 @@ function App() {
     localStorage.removeItem('user')
   }
 
+  const getSafeString = (val) => {
+    if (!val) return ''
+    return String(val).toLowerCase()
+  }
+
   const filtered = books.filter(b => {
-    if (filters.title && !b.title.toLowerCase().includes(filters.title.toLowerCase())) return false
-    if (filters.author && !b.author.toLowerCase().includes(filters.author.toLowerCase())) return false
-    if (filters.genre && !b.genre.toLowerCase().includes(filters.genre.toLowerCase())) return false
-    if (filters.isbn && !b.isbn.toLowerCase().includes(filters.isbn.toLowerCase())) return false
+    if (filters.title && !getSafeString(b.title).includes(filters.title.toLowerCase())) return false
+    if (filters.author && !getSafeString(b.author).includes(filters.author.toLowerCase())) return false
+    if (filters.genre && !getSafeString(b.genre).includes(filters.genre.toLowerCase())) return false
+    if (filters.isbn && !getSafeString(b.isbn).includes(filters.isbn.toLowerCase())) return false
     return true
   })
 
@@ -171,6 +195,7 @@ function App() {
             isAdmin={user && user.role === 'admin'}
             onDelete={() => fetchBooks()}
             onReserve={handleReserve}
+            onUnreserve={handleUnreserve}
             currentUser={user}
             onBorrow={handleBorrow}
             onReturn={handleReturn}

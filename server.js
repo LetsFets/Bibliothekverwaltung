@@ -144,16 +144,16 @@ initSqlJs().then((SQLlib) => {
     } catch (e) {
       // ignore if index fails for any reason
     }
-    // sample books
+    // sample books (some with mock borrowed data for demonstration)
     const samples = [
-      ['Der kleine Prinz','Antoine de Saint-Exupéry','Kinderbuch','978315000001'],
-      ['Faust','Johann Wolfgang von Goethe','Drama','978315000002'],
-      ['Clean Code','Robert C. Martin','Programmierung','9780132350884'],
-      ['Eloquent JavaScript','Marijn Haverbeke','Programmierung','9781593279509'],
-      ['Die Verwandlung','Franz Kafka','Novelle','978315000005']
+      ['Der kleine Prinz','Antoine de Saint-Exupéry','Kinderbuch','978315000001', null, null, null, null],
+      ['Faust','Johann Wolfgang von Goethe','Drama','978315000002', null, null, null, null],
+      ['Clean Code','Robert C. Martin','Programmierung','9780132350884', new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), 1, null, null],
+      ['Eloquent JavaScript','Marijn Haverbeke','Programmierung','9781593279509', new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(), 1, null, null],
+      ['Die Verwandlung','Franz Kafka','Novelle','978315000005', null, null, null, null]
     ];
     for (const it of samples) {
-      db.run('INSERT INTO books (title, author, genre, isbn) VALUES (?, ?, ?, ?)', it);
+      db.run('INSERT INTO books (title, author, genre, isbn, borrowed_until, borrowed_by, reserved_until, reserved_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', it);
     }
     exportAndSave();
   }
@@ -162,6 +162,27 @@ initSqlJs().then((SQLlib) => {
     db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_books_isbn ON books(isbn);');
   } catch (e) {}
   ensureBookColumns();
+
+  // Insert sample books if table is empty
+  function insertSampleBooks() {
+    const samples = [
+      ['Der kleine Prinz','Antoine de Saint-Exupéry','Kinderbuch','978315000001', null, null, null, null],
+      ['Faust','Johann Wolfgang von Goethe','Drama','978315000002', null, null, null, null],
+      ['Clean Code','Robert C. Martin','Programmierung','9780132350884', new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), 1, null, null],
+      ['Eloquent JavaScript','Marijn Haverbeke','Programmierung','9781593279509', new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(), 1, null, null],
+      ['Die Verwandlung','Franz Kafka','Novelle','978315000005', null, null, null, null]
+    ];
+    for (const it of samples) {
+      db.run('INSERT INTO books (title, author, genre, isbn, borrowed_until, borrowed_by, reserved_until, reserved_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', it);
+    }
+    exportAndSave();
+  }
+
+  // Check if books table is empty and populate if needed
+  const bookCount = getRow('SELECT COUNT(*) as cnt FROM books');
+  if (bookCount && bookCount.cnt === 0) {
+    insertSampleBooks();
+  }
 
   // Routes
   app.get('/', (req, res) => {
@@ -247,7 +268,7 @@ initSqlJs().then((SQLlib) => {
         const borrowedUntil = parseDate(book.borrowed_until);
         newReservedUntil = new Date(borrowedUntil.getTime() + 7 * 24 * 60 * 60 * 1000);
       } else {
-        newReservedUntil = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+        newReservedUntil = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
       }
 
       runStmt('UPDATE books SET reserved_until = ?, reserved_by = ? WHERE id = ?', [newReservedUntil.toISOString(), req.user.id, id]);
@@ -319,6 +340,28 @@ initSqlJs().then((SQLlib) => {
     }
   });
 
+  // Cancel a reservation (authenticated user, only their own).
+  app.post('/books/:id/unreserve', authMiddleware, (req, res) => {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ error: 'Invalid id' });
+    try {
+      const book = getRow('SELECT id, reserved_by FROM books WHERE id = ?', [id]);
+      if (!book) return res.status(404).json({ error: 'Book not found' });
+
+      if (!book.reserved_by || book.reserved_by !== req.user.id) {
+        return res.status(403).json({ error: 'Cannot unreserve reservation of another user' });
+      }
+
+      runStmt('UPDATE books SET reserved_until = NULL, reserved_by = NULL WHERE id = ?', [id]);
+
+      const updated = getRow('SELECT id, title, author, genre, isbn, borrowed_until, borrowed_by, reserved_until, reserved_by, created_at FROM books WHERE id = ?', [id]);
+      res.json(updated);
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: 'DB error' });
+    }
+  });
+
   app.post('/auth/login', (req, res) => {
     const { username, password } = req.body;
     if (!username || !password) return res.status(400).json({ error: 'username and password required' });
@@ -367,6 +410,19 @@ initSqlJs().then((SQLlib) => {
     } catch (err) {
       console.error(err);
       res.status(500).json({ error: 'Server error' });
+    }
+  });
+
+  // Admin endpoint to reset sample books with mock borrowed data
+  app.post('/admin/reset-sample-books', authMiddleware, adminMiddleware, (req, res) => {
+    try {
+      runStmt('DELETE FROM books');
+      insertSampleBooks();
+      const books = allRows('SELECT id, title, author, genre, isbn, borrowed_until, borrowed_by, reserved_until, reserved_by, created_at FROM books ORDER BY id');
+      res.json({ message: 'Sample books reset', books });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: 'DB error' });
     }
   });
 
