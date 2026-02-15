@@ -1,6 +1,14 @@
 import React from 'react'
+import BookStatus from './BookStatus'
 
-export default function BookList({ books, isAdmin, onDelete }) {
+function isFuture(value) {
+  if (!value) return false
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return false
+  return date.getTime() > Date.now()
+}
+
+export default function BookList({ books, isAdmin, onDelete, onReserve, currentUser, onBorrow, onReturn }) {
   if (!books || books.length === 0) {
     return <p>Keine Bücher gefunden.</p>
   }
@@ -22,6 +30,14 @@ export default function BookList({ books, isAdmin, onDelete }) {
     }
   }
 
+  function handleBorrow(book) {
+    onBorrow && onBorrow(book)
+  }
+
+  function handleReturn(book) {
+    onReturn && onReturn(book)
+  }
+
   return (
     <table className="book-table">
       <thead>
@@ -30,7 +46,8 @@ export default function BookList({ books, isAdmin, onDelete }) {
           <th>Autor</th>
           <th>Genre</th>
           <th>ISBN</th>
-          {isAdmin && <th>Aktionen</th>}
+          <th>Status</th>
+          <th>Aktionen</th>
         </tr>
       </thead>
       <tbody>
@@ -40,11 +57,21 @@ export default function BookList({ books, isAdmin, onDelete }) {
             <td>{b.author}</td>
             <td>{b.genre}</td>
             <td>{b.isbn}</td>
-            {isAdmin && (
-              <td>
-                <button onClick={() => handleDelete(b.id)}>Löschen</button>
-              </td>
-            )}
+            <td>
+              <BookStatus book={b} onReserve={onReserve} currentUser={currentUser} />
+            </td>
+            <td>
+              {isAdmin && (
+                <div className="action-stack">
+                  {isFuture(b.borrowed_until) ? (
+                    <button onClick={() => handleReturn(b)}>Rueckgabe</button>
+                  ) : (
+                    <button onClick={() => handleBorrow(b)}>Ausleihen (2 Wochen)</button>
+                  )}
+                  <button onClick={() => handleDelete(b.id)}>Loeschen</button>
+                </div>
+              )}
+            </td>
           </tr>
         ))}
       </tbody>

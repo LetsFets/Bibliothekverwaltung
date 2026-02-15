@@ -56,6 +56,63 @@ function App() {
     }
   }
 
+  async function handleReserve(book) {
+    try {
+      const token = localStorage.getItem('token')
+      const res = await fetch(`http://localhost:5000/books/${book.id}/reserve`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        alert(err.error || 'Reservierung fehlgeschlagen')
+        return
+      }
+      await res.json()
+      fetchBooks()
+    } catch (err) {
+      alert('Netzwerkfehler')
+    }
+  }
+
+  async function handleBorrow(book) {
+    try {
+      const token = localStorage.getItem('token')
+      const res = await fetch(`http://localhost:5000/books/${book.id}/borrow`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        alert(err.error || 'Ausleihe fehlgeschlagen')
+        return
+      }
+      await res.json()
+      fetchBooks()
+    } catch (err) {
+      alert('Netzwerkfehler')
+    }
+  }
+
+  async function handleReturn(book) {
+    try {
+      const token = localStorage.getItem('token')
+      const res = await fetch(`http://localhost:5000/books/${book.id}/return`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        alert(err.error || 'Rueckgabe fehlgeschlagen')
+        return
+      }
+      await res.json()
+      fetchBooks()
+    } catch (err) {
+      alert('Netzwerkfehler')
+    }
+  }
+
   function handleLogin(data) {
     // data: { token, user }
     localStorage.setItem('token', data.token)
@@ -109,7 +166,15 @@ function App() {
       <main className="content">
         <section className="list">
           <p className="api-msg">{message}</p>
-          <BookList books={filtered} isAdmin={user && user.role === 'admin'} onDelete={() => fetchBooks()} />
+          <BookList
+            books={filtered}
+            isAdmin={user && user.role === 'admin'}
+            onDelete={() => fetchBooks()}
+            onReserve={handleReserve}
+            currentUser={user}
+            onBorrow={handleBorrow}
+            onReturn={handleReturn}
+          />
         </section>
       </main>
     </div>

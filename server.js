@@ -75,6 +75,37 @@ function insertAndGetId(stmtSql, params = []) {
   return null;
 }
 
+function ensureBookColumns() {
+  const res = db.exec('PRAGMA table_info(books)');
+  const cols = new Set();
+  if (res && res[0] && res[0].values) {
+    for (const row of res[0].values) {
+      cols.add(row[1]);
+    }
+  }
+  const statements = [];
+  if (!cols.has('borrowed_until')) statements.push('ALTER TABLE books ADD COLUMN borrowed_until DATETIME');
+  if (!cols.has('borrowed_by')) statements.push('ALTER TABLE books ADD COLUMN borrowed_by INTEGER');
+  if (!cols.has('reserved_until')) statements.push('ALTER TABLE books ADD COLUMN reserved_until DATETIME');
+  if (!cols.has('reserved_by')) statements.push('ALTER TABLE books ADD COLUMN reserved_by INTEGER');
+  if (statements.length) {
+    for (const stmt of statements) db.run(stmt);
+    exportAndSave();
+  }
+}
+
+function parseDate(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date;
+}
+
+function isFutureDate(value) {
+  const date = parseDate(value);
+  return date ? date.getTime() > Date.now() : false;
+}
+
 function findUserByUsername(username) {
   return getRow('SELECT * FROM users WHERE username = ?', [username]);
 }
@@ -94,6 +125,10 @@ initSqlJs().then((SQLlib) => {
       author TEXT NOT NULL,
       genre TEXT,
       isbn TEXT,
+      borrowed_until DATETIME,
+      borrowed_by INTEGER,
+      reserved_until DATETIME,
+      reserved_by INTEGER,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );`);
     db.run(`CREATE TABLE IF NOT EXISTS users (
@@ -126,6 +161,7 @@ initSqlJs().then((SQLlib) => {
   try {
     db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_books_isbn ON books(isbn);');
   } catch (e) {}
+  ensureBookColumns();
 
   // Routes
   app.get('/', (req, res) => {
@@ -134,7 +170,7 @@ initSqlJs().then((SQLlib) => {
 
   app.get('/books', (req, res) => {
     try {
-      const rows = allRows('SELECT id, title, author, genre, isbn, created_at FROM books ORDER BY id');
+      const rows = allRows('SELECT id, title, author, genre, isbn, borrowed_until, borrowed_by, reserved_until, reserved_by, created_at FROM books ORDER BY id');
       res.json(rows);
     } catch (err) {
       console.error(err);
@@ -187,6 +223,96 @@ initSqlJs().then((SQLlib) => {
     try {
       runStmt('DELETE FROM books WHERE id = ?', [id]);
       res.status(204).send();
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: 'DB error' });
+    }
+  });
+
+  // Reserve a book (authenticated users). 2 weeks if available, or 1 week after due date if borrowed.
+  app.post('/books/:id/reserve', authMiddleware, (req, res) => {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ error: 'Invalid id' });
+    try {
+      const book = getRow('SELECT id, borrowed_until, reserved_until, reserved_by FROM books WHERE id = ?', [id]);
+      if (!book) return res.status(404).json({ error: 'Book not found' });
+
+      const reservedActive = isFutureDate(book.reserved_until);
+      if (reservedActive && book.reserved_by && book.reserved_by !== req.user.id) {
+        return res.status(409).json({ error: 'Book already reserved' });
+      }
+
+      let newReservedUntil;
+      if (isFutureDate(book.borrowed_until)) {
+        const borrowedUntil = parseDate(book.borrowed_until);
+        newReservedUntil = new Date(borrowedUntil.getTime() + 7 * 24 * 60 * 60 * 1000);
+      } else {
+        newReservedUntil = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+      }
+
+      runStmt('UPDATE books SET reserved_until = ?, reserved_by = ? WHERE id = ?', [newReservedUntil.toISOString(), req.user.id, id]);
+      const updated = getRow('SELECT id, title, author, genre, isbn, borrowed_until, borrowed_by, reserved_until, reserved_by, created_at FROM books WHERE id = ?', [id]);
+      res.json(updated);
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: 'DB error' });
+    }
+  });
+
+  // Borrow a book (admin only). 2 weeks from now.
+  app.post('/books/:id/borrow', authMiddleware, adminMiddleware, (req, res) => {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ error: 'Invalid id' });
+    try {
+      const book = getRow('SELECT id, borrowed_until, reserved_until, reserved_by FROM books WHERE id = ?', [id]);
+      if (!book) return res.status(404).json({ error: 'Book not found' });
+
+      if (isFutureDate(book.borrowed_until)) {
+        return res.status(409).json({ error: 'Book already borrowed' });
+      }
+
+      const reservedActive = isFutureDate(book.reserved_until);
+      if (reservedActive && book.reserved_by && book.reserved_by !== req.user.id) {
+        return res.status(409).json({ error: 'Book reserved by another user' });
+      }
+
+      const borrowedUntil = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+      const clearReservation = !reservedActive || book.reserved_by === req.user.id;
+      const reservedUntil = clearReservation ? null : book.reserved_until;
+      const reservedBy = clearReservation ? null : book.reserved_by;
+
+      runStmt(
+        'UPDATE books SET borrowed_until = ?, borrowed_by = ?, reserved_until = ?, reserved_by = ? WHERE id = ?',
+        [borrowedUntil.toISOString(), req.user.id, reservedUntil, reservedBy, id]
+      );
+
+      const updated = getRow('SELECT id, title, author, genre, isbn, borrowed_until, borrowed_by, reserved_until, reserved_by, created_at FROM books WHERE id = ?', [id]);
+      res.json(updated);
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: 'DB error' });
+    }
+  });
+
+  // Return a book (admin only).
+  app.post('/books/:id/return', authMiddleware, adminMiddleware, (req, res) => {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ error: 'Invalid id' });
+    try {
+      const book = getRow('SELECT id, borrowed_until, reserved_until, reserved_by FROM books WHERE id = ?', [id]);
+      if (!book) return res.status(404).json({ error: 'Book not found' });
+
+      const reservedActive = isFutureDate(book.reserved_until);
+      const reservedUntil = reservedActive ? book.reserved_until : null;
+      const reservedBy = reservedActive ? book.reserved_by : null;
+
+      runStmt(
+        'UPDATE books SET borrowed_until = NULL, borrowed_by = NULL, reserved_until = ?, reserved_by = ? WHERE id = ?',
+        [reservedUntil, reservedBy, id]
+      );
+
+      const updated = getRow('SELECT id, title, author, genre, isbn, borrowed_until, borrowed_by, reserved_until, reserved_by, created_at FROM books WHERE id = ?', [id]);
+      res.json(updated);
     } catch (err) {
       console.error(err);
       res.status(500).json({ error: 'DB error' });

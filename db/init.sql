@@ -5,6 +5,10 @@ CREATE TABLE IF NOT EXISTS books (
   author TEXT NOT NULL,
   genre TEXT,
   isbn TEXT NOT NULL,
+  borrowed_until DATETIME,
+  borrowed_by INTEGER,
+  reserved_until DATETIME,
+  reserved_by INTEGER,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 

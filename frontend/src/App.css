@@ -91,3 +91,45 @@
   padding: 0.75rem 0.5rem;
   border-bottom: 1px solid #eee;
 }
+
+.action-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  align-items: flex-start;
+}
+
+.status-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.status-pill {
+  display: inline-block;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  width: fit-content;
+  background: #f1f1f1;
+}
+
+.status-pill.available {
+  background: #e6f6ed;
+  color: #17643a;
+}
+
+.status-pill.borrowed {
+  background: #fff2d9;
+  color: #8a5a00;
+}
+
+.status-pill.reserved {
+  background: #e9eefc;
+  color: #2c3e8c;
+}
+
+.status-note {
+  font-size: 0.8rem;
+  color: #666;
+}
