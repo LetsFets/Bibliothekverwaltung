@@ -9,6 +9,16 @@ CREATE TABLE IF NOT EXISTS books (
   borrowed_by INTEGER,
   reserved_until DATETIME,
   reserved_by INTEGER,
+  total_copies INTEGER DEFAULT 1,
+  borrowed_count INTEGER DEFAULT 0,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS reservations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  book_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  reserved_until DATETIME NOT NULL,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 

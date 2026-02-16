@@ -56,13 +56,34 @@ function App() {
     }
   }
 
+  function requireToken() {
+    const token = localStorage.getItem('token')
+    if (!token) {
+      alert('Bitte erneut einloggen')
+      handleLogout()
+      return null
+    }
+    return token
+  }
+
+  function handleAuthFailure(res) {
+    if (res.status === 401) {
+      alert('Bitte erneut einloggen')
+      handleLogout()
+      return true
+    }
+    return false
+  }
+
   async function handleReserve(book) {
     try {
-      const token = localStorage.getItem('token')
+      const token = requireToken()
+      if (!token) return
       const res = await fetch(`http://localhost:5000/books/${book.id}/reserve`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}` }
       })
+      if (handleAuthFailure(res)) return
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
         alert(err.error || 'Reservierung fehlgeschlagen')
@@ -77,11 +98,13 @@ function App() {
 
   async function handleBorrow(book) {
     try {
-      const token = localStorage.getItem('token')
+      const token = requireToken()
+      if (!token) return
       const res = await fetch(`http://localhost:5000/books/${book.id}/borrow`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}` }
       })
+      if (handleAuthFailure(res)) return
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
         alert(err.error || 'Ausleihe fehlgeschlagen')
@@ -96,11 +119,13 @@ function App() {
 
   async function handleReturn(book) {
     try {
-      const token = localStorage.getItem('token')
+      const token = requireToken()
+      if (!token) return
       const res = await fetch(`http://localhost:5000/books/${book.id}/return`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}` }
       })
+      if (handleAuthFailure(res)) return
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
         alert(err.error || 'Rueckgabe fehlgeschlagen')
@@ -115,11 +140,13 @@ function App() {
 
   async function handleUnreserve(book) {
     try {
-      const token = localStorage.getItem('token')
+      const token = requireToken()
+      if (!token) return
       const res = await fetch(`http://localhost:5000/books/${book.id}/unreserve`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}` }
       })
+      if (handleAuthFailure(res)) return
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
         alert(err.error || 'Aufheben fehlgeschlagen')
@@ -129,6 +156,30 @@ function App() {
       fetchBooks()
     } catch (err) {
       alert('Netzwerkfehler')
+    }
+  }
+
+  async function handleUpdateBook(id, updates) {
+    try {
+      const token = requireToken()
+      if (!token) return false
+      const res = await fetch(`http://localhost:5000/books/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify(updates)
+      })
+      if (handleAuthFailure(res)) return false
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        alert(err.error || 'Speichern fehlgeschlagen')
+        return false
+      }
+      await res.json()
+      fetchBooks()
+      return true
+    } catch (err) {
+      alert('Netzwerkfehler')
+      return false
     }
   }
 
@@ -199,6 +250,7 @@ function App() {
             currentUser={user}
             onBorrow={handleBorrow}
             onReturn={handleReturn}
+            onUpdate={handleUpdateBook}
           />
         </section>
       </main>

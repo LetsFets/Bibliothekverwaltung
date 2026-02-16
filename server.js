@@ -88,10 +88,26 @@ function ensureBookColumns() {
   if (!cols.has('borrowed_by')) statements.push('ALTER TABLE books ADD COLUMN borrowed_by INTEGER');
   if (!cols.has('reserved_until')) statements.push('ALTER TABLE books ADD COLUMN reserved_until DATETIME');
   if (!cols.has('reserved_by')) statements.push('ALTER TABLE books ADD COLUMN reserved_by INTEGER');
+  if (!cols.has('total_copies')) statements.push('ALTER TABLE books ADD COLUMN total_copies INTEGER DEFAULT 1');
+  if (!cols.has('borrowed_count')) statements.push('ALTER TABLE books ADD COLUMN borrowed_count INTEGER DEFAULT 0');
   if (statements.length) {
     for (const stmt of statements) db.run(stmt);
-    exportAndSave();
   }
+  // Backfill missing values for existing rows
+  db.run('UPDATE books SET total_copies = 1 WHERE total_copies IS NULL');
+  db.run('UPDATE books SET borrowed_count = CASE WHEN borrowed_until IS NULL THEN 0 ELSE 1 END WHERE borrowed_count IS NULL');
+  exportAndSave();
+}
+
+function ensureReservationsTable() {
+  db.run(`CREATE TABLE IF NOT EXISTS reservations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    reserved_until DATETIME NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );`);
+  exportAndSave();
 }
 
 function parseDate(value) {
@@ -104,6 +120,20 @@ function parseDate(value) {
 function isFutureDate(value) {
   const date = parseDate(value);
   return date ? date.getTime() > Date.now() : false;
+}
+
+function getActiveReservationsForBook(bookId) {
+  const rows = allRows('SELECT id, book_id, user_id, reserved_until FROM reservations WHERE book_id = ?', [bookId]);
+  return rows
+    .filter(r => isFutureDate(r.reserved_until))
+    .sort((a, b) => new Date(a.reserved_until).getTime() - new Date(b.reserved_until).getTime());
+}
+
+function updateReservationSummary(bookId, reservations) {
+  const next = reservations && reservations.length ? reservations[0] : null;
+  const reservedUntil = next ? next.reserved_until : null;
+  const reservedBy = next ? next.user_id : null;
+  runStmt('UPDATE books SET reserved_until = ?, reserved_by = ? WHERE id = ?', [reservedUntil, reservedBy, bookId]);
 }
 
 function findUserByUsername(username) {
@@ -129,6 +159,15 @@ initSqlJs().then((SQLlib) => {
       borrowed_by INTEGER,
       reserved_until DATETIME,
       reserved_by INTEGER,
+      total_copies INTEGER DEFAULT 1,
+      borrowed_count INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );`);
+    db.run(`CREATE TABLE IF NOT EXISTS reservations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      book_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      reserved_until DATETIME NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );`);
     db.run(`CREATE TABLE IF NOT EXISTS users (
@@ -162,18 +201,19 @@ initSqlJs().then((SQLlib) => {
     db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_books_isbn ON books(isbn);');
   } catch (e) {}
   ensureBookColumns();
+  ensureReservationsTable();
 
   // Insert sample books if table is empty
   function insertSampleBooks() {
     const samples = [
-      ['Der kleine Prinz','Antoine de Saint-Exupéry','Kinderbuch','978315000001', null, null, null, null],
-      ['Faust','Johann Wolfgang von Goethe','Drama','978315000002', null, null, null, null],
-      ['Clean Code','Robert C. Martin','Programmierung','9780132350884', new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), 1, null, null],
-      ['Eloquent JavaScript','Marijn Haverbeke','Programmierung','9781593279509', new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(), 1, null, null],
-      ['Die Verwandlung','Franz Kafka','Novelle','978315000005', null, null, null, null]
+      ['Der kleine Prinz','Antoine de Saint-Exupéry','Kinderbuch','978315000001', null, null, null, null, 1, 0],
+      ['Faust','Johann Wolfgang von Goethe','Drama','978315000002', null, null, null, null, 2, 0],
+      ['Clean Code','Robert C. Martin','Programmierung','9780132350884', new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), 1, null, null, 2, 1],
+      ['Eloquent JavaScript','Marijn Haverbeke','Programmierung','9781593279509', new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(), 1, null, null, 1, 1],
+      ['Die Verwandlung','Franz Kafka','Novelle','978315000005', null, null, null, null, 1, 0]
     ];
     for (const it of samples) {
-      db.run('INSERT INTO books (title, author, genre, isbn, borrowed_until, borrowed_by, reserved_until, reserved_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', it);
+      db.run('INSERT INTO books (title, author, genre, isbn, borrowed_until, borrowed_by, reserved_until, reserved_by, total_copies, borrowed_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', it);
     }
     exportAndSave();
   }
@@ -191,7 +231,20 @@ initSqlJs().then((SQLlib) => {
 
   app.get('/books', (req, res) => {
     try {
-      const rows = allRows('SELECT id, title, author, genre, isbn, borrowed_until, borrowed_by, reserved_until, reserved_by, created_at FROM books ORDER BY id');
+      const rows = allRows('SELECT id, title, author, genre, isbn, borrowed_until, borrowed_by, reserved_until, reserved_by, total_copies, borrowed_count, created_at FROM books ORDER BY id');
+      const reservations = allRows('SELECT id, book_id, user_id, reserved_until FROM reservations');
+      const activeReservations = reservations.filter(r => isFutureDate(r.reserved_until));
+      const byBook = new Map();
+      for (const r of activeReservations) {
+        const list = byBook.get(r.book_id) || [];
+        list.push(r);
+        byBook.set(r.book_id, list);
+      }
+      for (const row of rows) {
+        const list = byBook.get(row.id) || [];
+        list.sort((a, b) => new Date(a.reserved_until).getTime() - new Date(b.reserved_until).getTime());
+        row.reservations = list;
+      }
       res.json(rows);
     } catch (err) {
       console.error(err);
@@ -250,17 +303,76 @@ initSqlJs().then((SQLlib) => {
     }
   });
 
+  // Update book (admin only)
+  app.put('/books/:id', authMiddleware, adminMiddleware, (req, res) => {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ error: 'Invalid id' });
+    const { title, author, genre, isbn, total_copies } = req.body || {};
+    try {
+      const existing = getRow('SELECT id, isbn, borrowed_count FROM books WHERE id = ?', [id]);
+      if (!existing) return res.status(404).json({ error: 'Book not found' });
+
+      const updates = [];
+      const params = [];
+
+      if (typeof title === 'string' && title.trim()) {
+        updates.push('title = ?');
+        params.push(title.trim());
+      }
+      if (typeof author === 'string' && author.trim()) {
+        updates.push('author = ?');
+        params.push(author.trim());
+      }
+      if (typeof genre === 'string') {
+        updates.push('genre = ?');
+        params.push(genre.trim() || null);
+      }
+      if (typeof isbn === 'string' && isbn.trim()) {
+        if (isbn.trim() !== existing.isbn) {
+          const other = getRow('SELECT id FROM books WHERE isbn = ? AND id != ?', [isbn.trim(), id]);
+          if (other) return res.status(409).json({ error: 'Book with this ISBN already exists' });
+        }
+        updates.push('isbn = ?');
+        params.push(isbn.trim());
+      }
+      if (typeof total_copies === 'number' && Number.isFinite(total_copies)) {
+        const normalized = Math.max(1, Math.floor(total_copies));
+        if (normalized < (existing.borrowed_count || 0)) {
+          return res.status(400).json({ error: 'total_copies cannot be меньше than borrowed_count' });
+        }
+        updates.push('total_copies = ?');
+        params.push(normalized);
+      }
+
+      if (!updates.length) return res.status(400).json({ error: 'No fields to update' });
+      params.push(id);
+      runStmt(`UPDATE books SET ${updates.join(', ')} WHERE id = ?`, params);
+
+      const updated = getRow('SELECT id, title, author, genre, isbn, borrowed_until, borrowed_by, reserved_until, reserved_by, total_copies, borrowed_count, created_at FROM books WHERE id = ?', [id]);
+      updated.reservations = getActiveReservationsForBook(id);
+      res.json(updated);
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: 'DB error' });
+    }
+  });
+
   // Reserve a book (authenticated users). 2 weeks if available, or 1 week after due date if borrowed.
   app.post('/books/:id/reserve', authMiddleware, (req, res) => {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ error: 'Invalid id' });
     try {
-      const book = getRow('SELECT id, borrowed_until, reserved_until, reserved_by FROM books WHERE id = ?', [id]);
+      const book = getRow('SELECT id, borrowed_until, reserved_until, reserved_by, total_copies, borrowed_count FROM books WHERE id = ?', [id]);
       if (!book) return res.status(404).json({ error: 'Book not found' });
 
-      const reservedActive = isFutureDate(book.reserved_until);
-      if (reservedActive && book.reserved_by && book.reserved_by !== req.user.id) {
-        return res.status(409).json({ error: 'Book already reserved' });
+      const totalCopies = book.total_copies || 1;
+
+      const reservations = getActiveReservationsForBook(id);
+      if (reservations.some(r => r.user_id === req.user.id)) {
+        return res.status(409).json({ error: 'Already reserved by you' });
+      }
+      if (reservations.length >= totalCopies) {
+        return res.status(409).json({ error: 'Reservation queue full' });
       }
 
       let newReservedUntil;
@@ -271,8 +383,12 @@ initSqlJs().then((SQLlib) => {
         newReservedUntil = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
       }
 
-      runStmt('UPDATE books SET reserved_until = ?, reserved_by = ? WHERE id = ?', [newReservedUntil.toISOString(), req.user.id, id]);
-      const updated = getRow('SELECT id, title, author, genre, isbn, borrowed_until, borrowed_by, reserved_until, reserved_by, created_at FROM books WHERE id = ?', [id]);
+      runStmt('INSERT INTO reservations (book_id, user_id, reserved_until) VALUES (?, ?, ?)', [id, req.user.id, newReservedUntil.toISOString()]);
+      const updatedReservations = getActiveReservationsForBook(id);
+      updateReservationSummary(id, updatedReservations);
+
+      const updated = getRow('SELECT id, title, author, genre, isbn, borrowed_until, borrowed_by, reserved_until, reserved_by, total_copies, borrowed_count, created_at FROM books WHERE id = ?', [id]);
+      updated.reservations = updatedReservations;
       res.json(updated);
     } catch (err) {
       console.error(err);
@@ -285,29 +401,35 @@ initSqlJs().then((SQLlib) => {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ error: 'Invalid id' });
     try {
-      const book = getRow('SELECT id, borrowed_until, reserved_until, reserved_by FROM books WHERE id = ?', [id]);
+      const book = getRow('SELECT id, borrowed_until, reserved_until, reserved_by, total_copies, borrowed_count FROM books WHERE id = ?', [id]);
       if (!book) return res.status(404).json({ error: 'Book not found' });
 
-      if (isFutureDate(book.borrowed_until)) {
-        return res.status(409).json({ error: 'Book already borrowed' });
-      }
-
-      const reservedActive = isFutureDate(book.reserved_until);
-      if (reservedActive && book.reserved_by && book.reserved_by !== req.user.id) {
-        return res.status(409).json({ error: 'Book reserved by another user' });
+      const totalCopies = book.total_copies || 1;
+      const borrowedCount = book.borrowed_count || 0;
+      const availableCount = Math.max(totalCopies - borrowedCount, 0);
+      if (availableCount <= 0) {
+        return res.status(409).json({ error: 'No copies available' });
       }
 
       const borrowedUntil = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
-      const clearReservation = !reservedActive || book.reserved_by === req.user.id;
-      const reservedUntil = clearReservation ? null : book.reserved_until;
-      const reservedBy = clearReservation ? null : book.reserved_by;
+      const existingDue = parseDate(book.borrowed_until);
+      const nextDue = existingDue && existingDue.getTime() < borrowedUntil.getTime() ? existingDue : borrowedUntil;
 
       runStmt(
-        'UPDATE books SET borrowed_until = ?, borrowed_by = ?, reserved_until = ?, reserved_by = ? WHERE id = ?',
-        [borrowedUntil.toISOString(), req.user.id, reservedUntil, reservedBy, id]
+        'UPDATE books SET borrowed_until = ?, borrowed_by = ?, borrowed_count = borrowed_count + 1 WHERE id = ?',
+        [nextDue.toISOString(), req.user.id, id]
       );
 
-      const updated = getRow('SELECT id, title, author, genre, isbn, borrowed_until, borrowed_by, reserved_until, reserved_by, created_at FROM books WHERE id = ?', [id]);
+      // If user had a reservation, remove it
+      const reservation = getRow('SELECT id FROM reservations WHERE book_id = ? AND user_id = ? ORDER BY reserved_until LIMIT 1', [id, req.user.id]);
+      if (reservation && reservation.id) {
+        runStmt('DELETE FROM reservations WHERE id = ?', [reservation.id]);
+      }
+      const updatedReservations = getActiveReservationsForBook(id);
+      updateReservationSummary(id, updatedReservations);
+
+      const updated = getRow('SELECT id, title, author, genre, isbn, borrowed_until, borrowed_by, reserved_until, reserved_by, total_copies, borrowed_count, created_at FROM books WHERE id = ?', [id]);
+      updated.reservations = updatedReservations;
       res.json(updated);
     } catch (err) {
       console.error(err);
@@ -320,19 +442,20 @@ initSqlJs().then((SQLlib) => {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ error: 'Invalid id' });
     try {
-      const book = getRow('SELECT id, borrowed_until, reserved_until, reserved_by FROM books WHERE id = ?', [id]);
+      const book = getRow('SELECT id, borrowed_until, reserved_until, reserved_by, borrowed_count FROM books WHERE id = ?', [id]);
       if (!book) return res.status(404).json({ error: 'Book not found' });
 
-      const reservedActive = isFutureDate(book.reserved_until);
-      const reservedUntil = reservedActive ? book.reserved_until : null;
-      const reservedBy = reservedActive ? book.reserved_by : null;
+      const borrowedCount = book.borrowed_count || 0;
+      const nextBorrowedCount = Math.max(borrowedCount - 1, 0);
+      const nextBorrowedUntil = nextBorrowedCount === 0 ? null : book.borrowed_until;
 
       runStmt(
-        'UPDATE books SET borrowed_until = NULL, borrowed_by = NULL, reserved_until = ?, reserved_by = ? WHERE id = ?',
-        [reservedUntil, reservedBy, id]
+        'UPDATE books SET borrowed_until = ?, borrowed_by = NULL, borrowed_count = ? WHERE id = ?',
+        [nextBorrowedUntil, nextBorrowedCount, id]
       );
 
-      const updated = getRow('SELECT id, title, author, genre, isbn, borrowed_until, borrowed_by, reserved_until, reserved_by, created_at FROM books WHERE id = ?', [id]);
+      const updated = getRow('SELECT id, title, author, genre, isbn, borrowed_until, borrowed_by, reserved_until, reserved_by, total_copies, borrowed_count, created_at FROM books WHERE id = ?', [id]);
+      updated.reservations = getActiveReservationsForBook(id);
       res.json(updated);
     } catch (err) {
       console.error(err);
@@ -345,16 +468,20 @@ initSqlJs().then((SQLlib) => {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ error: 'Invalid id' });
     try {
-      const book = getRow('SELECT id, reserved_by FROM books WHERE id = ?', [id]);
+      const book = getRow('SELECT id FROM books WHERE id = ?', [id]);
       if (!book) return res.status(404).json({ error: 'Book not found' });
 
-      if (!book.reserved_by || book.reserved_by !== req.user.id) {
+      const reservation = getRow('SELECT id FROM reservations WHERE book_id = ? AND user_id = ? ORDER BY reserved_until LIMIT 1', [id, req.user.id]);
+      if (!reservation || !reservation.id) {
         return res.status(403).json({ error: 'Cannot unreserve reservation of another user' });
       }
 
-      runStmt('UPDATE books SET reserved_until = NULL, reserved_by = NULL WHERE id = ?', [id]);
+      runStmt('DELETE FROM reservations WHERE id = ?', [reservation.id]);
+      const updatedReservations = getActiveReservationsForBook(id);
+      updateReservationSummary(id, updatedReservations);
 
-      const updated = getRow('SELECT id, title, author, genre, isbn, borrowed_until, borrowed_by, reserved_until, reserved_by, created_at FROM books WHERE id = ?', [id]);
+      const updated = getRow('SELECT id, title, author, genre, isbn, borrowed_until, borrowed_by, reserved_until, reserved_by, total_copies, borrowed_count, created_at FROM books WHERE id = ?', [id]);
+      updated.reservations = updatedReservations;
       res.json(updated);
     } catch (err) {
       console.error(err);
@@ -416,9 +543,10 @@ initSqlJs().then((SQLlib) => {
   // Admin endpoint to reset sample books with mock borrowed data
   app.post('/admin/reset-sample-books', authMiddleware, adminMiddleware, (req, res) => {
     try {
+      runStmt('DELETE FROM reservations');
       runStmt('DELETE FROM books');
       insertSampleBooks();
-      const books = allRows('SELECT id, title, author, genre, isbn, borrowed_until, borrowed_by, reserved_until, reserved_by, created_at FROM books ORDER BY id');
+      const books = allRows('SELECT id, title, author, genre, isbn, borrowed_until, borrowed_by, reserved_until, reserved_by, total_copies, borrowed_count, created_at FROM books ORDER BY id');
       res.json({ message: 'Sample books reset', books });
     } catch (err) {
       console.error(err);
