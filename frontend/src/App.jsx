@@ -4,6 +4,7 @@ import Filter from './components/Filter'
 import BookList from './components/BookList'
 import AddBook from './components/AddBook'
 import Login from './components/Login'
+import Settings from './components/Settings'
 import './App.css'
 
 // books will be loaded from backend after login
@@ -14,6 +15,7 @@ function App() {
   const [filters, setFilters] = useState({ title: '', author: '', genre: '', isbn: '' })
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [user, setUser] = useState(null)
+  const [showSettings, setShowSettings] = useState(false)
 
   useEffect(() => {
     // initial API message
@@ -226,7 +228,11 @@ function App() {
           <h1>Bibliotheksverwaltung</h1>
           <div>
             {user && <span style={{ marginRight: 10 }}>Angemeldet als {user.username}</span>}
-            <button onClick={handleLogout}>Logout</button>
+            {user && (
+              <button onClick={() => setShowSettings(true)}>
+                Einstellungen
+              </button>
+            )}
           </div>
         </header>
 
@@ -254,6 +260,25 @@ function App() {
           />
         </section>
       </main>
+
+      {showSettings && (
+        <Settings
+          token={localStorage.getItem('token')}
+          onChangePassword={() => {
+            // Keep user logged in after password change
+          }}
+          onDeleteAccount={() => {
+            // User deleted their account, logout
+            handleLogout()
+          }}
+          onLogout={() => {
+            // User logged out from settings
+            setShowSettings(false)
+            handleLogout()
+          }}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
     </div>
   )
 }

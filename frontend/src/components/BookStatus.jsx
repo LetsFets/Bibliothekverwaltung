@@ -49,11 +49,6 @@ export default function BookStatus({ book, onReserve, onUnreserve, currentUser }
         {statusText}
       </div>
       <div className="status-note">Bestand: {availableCount}/{totalCopies}</div>
-      {reservedActive && (
-        <div className="status-note">
-          Reservierungen: {reservationCount}
-        </div>
-      )}
       {reservedActive && reservations.slice(0, 2).map((r, idx) => (
         <div className="status-note" key={`${r.id || r.user_id}-${idx}`}>
           Reservierung {idx + 1} bis {formatDate(r.reserved_until)}

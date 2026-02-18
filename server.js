@@ -540,6 +540,50 @@ initSqlJs().then((SQLlib) => {
     }
   });
 
+  // Change password (authenticated user)
+  app.put('/user/password', authMiddleware, (req, res) => {
+    const { oldPassword, newPassword } = req.body;
+    if (!oldPassword || !newPassword) return res.status(400).json({ error: 'Old password and new password required' });
+    try {
+      const user = getRow('SELECT id, username, password FROM users WHERE id = ?', [req.user.id]);
+      if (!user) return res.status(404).json({ error: 'User not found' });
+
+      const ok = bcrypt.compareSync(oldPassword, user.password);
+      if (!ok) return res.status(401).json({ error: 'Old password is incorrect' });
+
+      const hash = bcrypt.hashSync(newPassword, 10);
+      runStmt('UPDATE users SET password = ? WHERE id = ?', [hash, req.user.id]);
+
+      res.json({ message: 'Password updated successfully' });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: 'Server error' });
+    }
+  });
+
+  // Delete account (authenticated user, requires password confirmation)
+  app.delete('/user/account', authMiddleware, (req, res) => {
+    const { password } = req.body;
+    if (!password) return res.status(400).json({ error: 'Password required for account deletion' });
+    try {
+      const user = getRow('SELECT id, username, password FROM users WHERE id = ?', [req.user.id]);
+      if (!user) return res.status(404).json({ error: 'User not found' });
+
+      const ok = bcrypt.compareSync(password, user.password);
+      if (!ok) return res.status(401).json({ error: 'Password is incorrect' });
+
+      // Delete user's reservations
+      runStmt('DELETE FROM reservations WHERE user_id = ?', [req.user.id]);
+      // Delete user
+      runStmt('DELETE FROM users WHERE id = ?', [req.user.id]);
+
+      res.json({ message: 'Account deleted successfully' });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: 'Server error' });
+    }
+  });
+
   // Admin endpoint to reset sample books with mock borrowed data
   app.post('/admin/reset-sample-books', authMiddleware, adminMiddleware, (req, res) => {
     try {
