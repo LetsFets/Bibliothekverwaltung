@@ -523,23 +523,6 @@ initSqlJs().then((SQLlib) => {
     }
   });
 
-  app.post('/auth/setup', (req, res) => {
-    const { username, password, role } = req.body;
-    if (!username || !password) return res.status(400).json({ error: 'username and password required' });
-    try {
-      const row = getRow('SELECT COUNT(*) as cnt FROM users');
-      if (row && row.cnt > 0) return res.status(400).json({ error: 'Users already exist' });
-      const hash = bcrypt.hashSync(password, 10);
-      runStmt('INSERT INTO users (username, password, role) VALUES (?, ?, ?)', [username, hash, role || 'admin']);
-      const user = getRow('SELECT id, username, role FROM users WHERE username = ?', [username]);
-      const token = signToken(user);
-      res.json({ token, user });
-    } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: 'Server error' });
-    }
-  });
-
   // Change password (authenticated user)
   app.put('/user/password', authMiddleware, (req, res) => {
     const { oldPassword, newPassword } = req.body;
