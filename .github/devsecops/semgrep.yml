@@ -1,0 +1,29 @@
+rules:
+  - id: demo.javascript.eval
+    message: "eval() fuehrt dynamischen JavaScript-Code aus. Nutze einen Parser oder sichere, feste Zuordnungen."
+    severity: ERROR
+    languages: [javascript, typescript]
+    patterns:
+      - pattern: eval(...)
+    metadata:
+      category: security
+      cwe: 'CWE-95'
+
+  - id: demo.python.eval
+    message: "eval() kann nutzerkontrollierte Python-Ausdruecke ausfuehren. Keine untrusted Eingabe auswerten."
+    severity: ERROR
+    languages: [python]
+    pattern: eval(...)
+    metadata:
+      category: security
+      cwe: 'CWE-95'
+
+  - id: demo.python.shell
+    message: "subprocess mit shell=True kann Command Injection ermoeglichen. Argumentliste ohne Shell nutzen."
+    severity: ERROR
+    languages: [python]
+    patterns:
+      - pattern: subprocess.$F(..., shell=True)
+    metadata:
+      category: security
+      cwe: 'CWE-78'

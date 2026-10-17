@@ -1,0 +1,15 @@
+{
+  "target_url": "http://127.0.0.1:3000/",
+  "services": [
+    {
+      "name": "web",
+      "directory": ".",
+      "install": "auto",
+      "start": "auto",
+      "ready_url": "http://127.0.0.1:3000/",
+      "required_env": [],
+      "env": {}
+    }
+  ],
+  "zap_ajax_spider": false
+}
