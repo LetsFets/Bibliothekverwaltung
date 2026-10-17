@@ -82,8 +82,9 @@ def docker_args(tool: str, project: Path, output: Path) -> list[str]:
     if tool == 'semgrep':
         mounts += ['-v', f'{ROOT / ".github" / "devsecops" / "semgrep.yml"}:/rules/semgrep.yml:ro']
     if tool == 'trivy':
-        cache = output.parent.parent / '.devsecops-trivy-cache'
-        cache.mkdir(parents=True, exist_ok=True)
+        # Never infer a writable directory from the depth of the report path.
+        # Command construction is side-effect free; scan_one prepares this path.
+        cache = output.resolve() / '.devsecops-trivy-cache'
         mounts += ['-v', f'{cache}:/cache:rw']
     cmd = ['docker', 'run', '--rm', '--security-opt', 'no-new-privileges',
            '--cap-drop', 'ALL']
@@ -120,8 +121,10 @@ def scan_one(tool: str, project: Path, dest: Path) -> dict[str, Any]:
     """Scannerfehler getrennt von Findings behandeln; keinen stillen Erfolg melden."""
     dest.mkdir(parents=True, exist_ok=True)
     report = dest / (tool + '.json')
-    cmd = docker_args(tool, project, dest)
     try:
+        if tool == 'trivy':
+            (dest.resolve() / '.devsecops-trivy-cache').mkdir(parents=True, exist_ok=True)
+        cmd = docker_args(tool, project, dest)
         completed = subprocess.run(cmd, capture_output=True, text=True, timeout=900,
                                    encoding='utf-8', errors='replace', check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -129,7 +132,8 @@ def scan_one(tool: str, project: Path, dest: Path) -> dict[str, Any]:
         return {'tool': tool, 'status': 'ERROR', 'count': None, 'examples': [],
                 'message': str(exc)[:250]}
 
-    log = (completed.stderr or '')[-5000:]
+    log = ((completed.stdout or '') + '\n' + (completed.stderr or ''))[-20000:]
+    (dest / (tool + '.log')).write_text(log, encoding='utf-8')
     if completed.returncode != 0:
         (dest / (tool + '.error.txt')).write_text(
             f'Exit-Code {completed.returncode}\n{log}\n', encoding='utf-8')
@@ -154,6 +158,12 @@ def scan_one(tool: str, project: Path, dest: Path) -> dict[str, Any]:
             raise ValueError('JSON-Ergebnis ist null')
         if tool == 'semgrep' and (not isinstance(data, dict) or 'results' not in data):
             raise ValueError('Semgrep-results fehlen')
+        if tool == 'semgrep':
+            fatal = [e for e in data.get('errors', []) if e.get('level', '').lower() == 'error']
+            if fatal:
+                raise ValueError('Semgrep meldet Scanfehler; Details in semgrep.json')
+            if 'paths' in data and not data['paths'].get('scanned'):
+                raise ValueError('Semgrep hat keine Quelldateien gescannt')
         # Trivy laesst 'Results' bei 0 Schwachstellen oft komplett weg.
         # Das ist ein gueltiger Report, wenn SchemaVersion und ArtifactType da sind.
         if tool == 'trivy' and (not isinstance(data, dict) or
@@ -189,7 +199,7 @@ def safe_slug(path: str) -> str:
 
 def markdown_summary(projects: list[dict[str, Any]], zap: dict[str, Any], enforce: bool) -> str:
     lines = [
-        '# DevSecOps V6 Security Report', '',
+        '# DevSecOps V7 Security Report', '',
         'Semgrep (SAST), Gitleaks (Secrets), Trivy (SCA), OWASP ZAP (DAST).', '',
         '| Projekt | Semgrep | Gitleaks | Trivy |',
         '|---|---:|---:|---:|',
@@ -226,7 +236,7 @@ def markdown_summary(projects: list[dict[str, Any]], zap: dict[str, Any], enforc
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description='V5: 3 statische Scanner + ZAP gegen lokal gestartete Web-App')
+    parser = argparse.ArgumentParser(description='V7: 3 statische Scanner + ZAP gegen lokal gestartete Web-App')
     parser.add_argument('--static-only', action='store_true', help='Nur Semgrep/Gitleaks/Trivy')
     parser.add_argument('--projects', default='.', help='Kommagetrennte relative Ordner, z.B. . oder examples/01-js-auth,examples/02-python-api')
     parser.add_argument('--mode', choices=['baseline', 'full'], default='baseline')

@@ -14,6 +14,9 @@ from pathlib import Path
 import re
 import shlex
 import signal
+import shutil
+import tempfile
+import uuid
 import subprocess
 import time
 from typing import Any
@@ -163,9 +166,9 @@ def auto_start(root: Path, directory: Path, ready_url: str, pm: str) -> list[str
     deps = {**data.get('dependencies', {}), **data.get('devDependencies', {})}
     port = str(urlparse(ready_url).port)
     if 'next' in deps:
-        return [pm, 'exec', 'next', 'dev', '--hostname', '127.0.0.1', '--port', port]
+        return [pm, 'exec', *(['--'] if pm=='npm' else []), 'next', 'dev', '--hostname', '127.0.0.1', '--port', port]
     if 'vite' in deps:
-        return [pm, 'exec', 'vite', '--host', '127.0.0.1', '--port', port, '--strictPort']
+        return [pm, 'exec', *(['--'] if pm=='npm' else []), 'vite', '--host', '127.0.0.1', '--port', port, '--strictPort']
     scripts = data.get('scripts', {})
     if 'dev' in scripts:
         return [pm, 'run', 'dev']
@@ -240,11 +243,11 @@ def parse_zap(data: Any) -> tuple[int, list[str], int]:
     return len(alerts), examples, instances
 
 
-def execute(root: Path, dest: Path, mode: str, selftest: bool = False) -> dict[str, Any]:
+def execute(root: Path, dest: Path, mode: str, selftest: bool = False, config: dict | None = None) -> dict[str, Any]:
     dest.mkdir(parents=True, exist_ok=True)
     report = dest / 'zap.json'
     try:
-        conf = read_config(root, selftest)
+        conf = config if config is not None else read_config(root, selftest)
     except (OSError, ValueError, TypeError) as exc:
         return failed(dest, 'Konfiguration: ' + str(exc), mode)
     processes: list[subprocess.Popen] = []
@@ -255,7 +258,7 @@ def execute(root: Path, dest: Path, mode: str, selftest: bool = False) -> dict[s
             name = safe_name(str(service.get('name', 'service')))
             directory = config_path(root, service.get('directory', '.'))
             env = os.environ.copy()
-            env.update({'CI': 'true', 'DEVSECOPS_TEST': 'true'})
+            env.update({'CI': 'true', 'DEVSECOPS_TEST': 'true', 'COREPACK_ENABLE_DOWNLOAD_PROMPT':'0', 'NEXT_TELEMETRY_DISABLED':'1'})
             for key, value in service.get('env', {}).items():
                 if not isinstance(key, str) or not isinstance(value, str):
                     raise ValueError('env-Schluessel und -Werte muessen Strings sein.')
@@ -274,7 +277,7 @@ def execute(root: Path, dest: Path, mode: str, selftest: bool = False) -> dict[s
                 print(f'  [web] {name}: Installation ({pm if install == "auto" else "benutzerdefiniert"}) ...', flush=True)
                 if install == 'auto':
                     prepare_package_manager(pm, declaration, lockdir, directory, env, log)
-                    run_logged(installed_command(pm, declaration, lockdir), directory, env, log)
+                    run_logged(installed_command(pm, declaration, lockdir), lockdir, env, log)
                 else:
                     run_logged(['bash', '-lc', install], directory, env, log)
             if service.get('setup'):
@@ -291,41 +294,26 @@ def execute(root: Path, dest: Path, mode: str, selftest: bool = False) -> dict[s
             proc = subprocess.Popen(command, cwd=directory, env=env, stdout=stream,
                                     stderr=subprocess.STDOUT, start_new_session=True)
             processes.append(proc)
-            ok, reason = await_ready(service['ready_url'], proc)
+            ok, reason = await_ready(service['ready_url'], proc, timeout=240)
             if not ok:
                 raise RuntimeError(f'{name}: Nicht scanbereit: {service["ready_url"]} – {reason}. Siehe {name}-server.log')
             print(f'  [web] {name}: erreichbar ({reason})', flush=True)
 
-        url = local_url(conf['target_url'])
-        if not reachable(url):
-            raise RuntimeError('Test-URL antwortet nicht: ' + url)
-        # ZAP uses its own non-root user. Restrict writable permissions to an
-        # ephemeral report folder OUTSIDE the repository, never the source tree.
-        if os.environ.get('GITHUB_ACTIONS') == 'true' and not dest.resolve().is_relative_to(Path(os.environ.get('RUNNER_TEMP', '/tmp')).resolve()):
-            raise RuntimeError('ZAP Reportverzeichnis muss innerhalb RUNNER_TEMP liegen.')
-        os.chmod(dest, 0o777)
-        tool = 'zap-baseline.py' if mode == 'baseline' else 'zap-full-scan.py'
-        args = ['docker', 'run', '--rm', '--network', 'host',
-                '--security-opt', 'no-new-privileges', '--cap-drop', 'ALL',
-                '-v', f'{dest}:/zap/wrk/:rw', ZAP_IMAGE, tool,
-                '-t', url, '-J', 'zap.json', '-r', 'zap.html', '-I']
-        if mode == 'baseline':
-            args += ['-m', '1', '-T', '5']
-        elif conf.get('zap_ajax_spider', False):
-            args += ['-j']
-        print(f'  [zap] Starte {mode} gegen {url} ...', flush=True)
-        runlog = dest / 'zap-run.log'
-        with runlog.open('w', encoding='utf-8') as handle:
-            result = subprocess.run(args, stdout=handle, stderr=subprocess.STDOUT,
-                                    timeout=1200 if mode == 'full' else 600, check=False)
-        if result.returncode not in (0, 1, 2):
-            raise RuntimeError(f'ZAP Exit-Code {result.returncode}, siehe zap-run.log')
-        if not report.exists() or not report.stat().st_size:
-            raise RuntimeError('ZAP hat keinen JSON-Report geschrieben, siehe zap-run.log')
-        n, ids, instances = parse_zap(json.loads(report.read_text(encoding='utf-8')))
-        return {'tool': 'zap', 'status': 'FINDINGS' if n else 'OK', 'count': n,
-                'examples': ids, 'message': f'{mode}: {instances} betroffene URLs/Instanzen',
-                'mode': mode, 'target': 'selftest' if selftest else 'project'}
+        from session_setup import prepare, verify
+        prepare(conf)
+        targets = conf.get('targets') or [{'name':'zap', 'url':conf['target_url'],
+                                          'ajax':conf.get('zap_ajax_spider',False)}]
+        outcomes=[]
+        for target in targets:
+            outcomes.append(run_zap(target, targets, dest, mode, selftest))
+        verify(conf)
+        coverage={'profile':conf.get('_profile','custom'), 'preflight':conf.get('coverage',[]),
+                  'authentication':conf.get('auth_note','anonymous'), 'targets':outcomes}
+        (dest/'coverage.json').write_text(json.dumps(coverage,indent=2))
+        count=sum(x['count'] for x in outcomes)
+        return {'tool':'zap', 'status':'FINDINGS' if count else 'OK', 'count':count,
+                'examples':[], 'message':f'{mode}: {len(outcomes)} Ziel(e), siehe coverage.json',
+                'mode':mode, 'target':'selftest' if selftest else 'project'}
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
         return failed(dest, str(exc), mode)
     finally:
@@ -341,6 +329,55 @@ def execute(root: Path, dest: Path, mode: str, selftest: bool = False) -> dict[s
                         pass
         for stream in streams:
             stream.close()
+
+
+def run_zap(target, targets, dest, mode, selftest=False):
+    url=local_url(target['url'])
+    if not reachable(url):raise RuntimeError('Test-URL antwortet nicht: '+url)
+    if os.environ.get('GITHUB_ACTIONS')=='true' and not dest.resolve().is_relative_to(Path(os.environ.get('RUNNER_TEMP','/tmp')).resolve()):
+        raise RuntimeError('ZAP Reportverzeichnis muss innerhalb RUNNER_TEMP liegen.')
+    name=safe_name(target.get('name','zap'))
+    # Mount only an empty staging directory: ZAP runs as its image-defined user.
+    # Output filenames are prefixes so frontend/API cannot overwrite one another.
+    container='devsecops-zap-'+uuid.uuid4().hex[:12]
+    with tempfile.TemporaryDirectory(prefix='zap-stage-',dir=dest.parent) as scratch:
+        stage=Path(scratch); os.chmod(stage,0o755)
+        reports=stage/'reports'; reports.mkdir(); os.chmod(reports,0o777)
+        private=stage/'private'; private.mkdir(); os.chmod(private,0o755)
+        control={**target,'allowed_origins':[t['url'].rstrip('/') for t in targets]}
+        (private/'control.json').write_text(json.dumps(control)); os.chmod(private/'control.json',0o644)
+        shutil.copyfile(Path(__file__).with_name('zap_hooks.py'),private/'zap_hooks.py')
+        os.chmod(private/'zap_hooks.py',0o644)
+        args=['docker','run','--rm','--name',container,'--network','host','--shm-size=1g',
+              '--security-opt','no-new-privileges','--cap-drop','ALL',
+              '-v',f'{reports}:/zap/wrk/:rw','-v',f'{private}:/zap/private/:ro',
+              ZAP_IMAGE,'zap-baseline.py' if mode=='baseline' else 'zap-full-scan.py',
+              '-t',url,'-J','zap.json','-r','zap.html','-I','-m','2','-T','5']
+        if not selftest:
+            args+=['--hook=/zap/private/zap_hooks.py']
+        if mode=='baseline':args+=['--autooff']
+        if target.get('ajax'):args+=['-j','--ajax-spider']
+        print(f'  [zap] {mode}: {url}',flush=True)
+        try:
+            with (dest/f'{name}-zap-run.log').open('w') as log:
+                done=subprocess.run(args,stdout=log,stderr=subprocess.STDOUT,
+                                    timeout=1800 if mode=='full' else 900,check=False)
+            if done.returncode not in (0,1,2):raise RuntimeError(f'ZAP {name}: Exit {done.returncode}; siehe Log')
+            report=reports/'zap.json'
+            if not report.is_file():raise RuntimeError(f'ZAP {name}: JSON-Report fehlt')
+            count,examples,instances=parse_zap(json.loads(report.read_text()))
+            if not selftest:
+                coverage=json.loads((reports/'hook-coverage.json').read_text())
+                if not coverage.get('completed') or not coverage.get('seeded'):
+                    raise RuntimeError('ZAP-Hooks/Abdeckungsprüfung unvollständig')
+            return {'name':name,'url':url,'count':count,'instances':instances}
+        finally:
+            # Killing docker CLI on timeout does not stop its container.
+            subprocess.run(['docker','rm','-f',container],stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL,check=False,timeout=30)
+            for file in reports.iterdir():
+                if file.is_file() and file.name in ('zap.json','zap.html','hook-coverage.json'):
+                    shutil.copyfile(file,dest/f'{name}-{file.name}')
 
 
 def safe_name(name: str) -> str:
