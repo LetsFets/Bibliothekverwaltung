@@ -198,40 +198,67 @@ def safe_slug(path: str) -> str:
 
 
 def markdown_summary(projects: list[dict[str, Any]], zap: dict[str, Any], enforce: bool) -> str:
+    """GitHub Actions friendly overview; never print secret values or payloads."""
+    labels = {'OK':'✅ OK', 'FINDINGS':'⚠️ Funde', 'ERROR':'❌ Fehler',
+              'SKIPPED':'➖ Separater Job'}
+    kinds = {'semgrep':'SAST · Code', 'gitleaks':'Secrets · Zugangsdaten',
+             'trivy':'SCA · Abhängigkeiten', 'zap':'DAST · HTTP'}
+    statuses = [s['status'] for item in projects for s in item['scans']]
+    errors = [f"{item['project']} / {s['tool']}: {s.get('message', 'Technischer Fehler')}"
+              for item in projects for s in item['scans'] if s['status'] == 'ERROR']
+    if zap['status'] == 'ERROR':
+        errors.append('ZAP: ' + zap.get('message', 'Technischer Fehler'))
+    total = sum((s.get('count') or 0) for item in projects for s in item['scans'])
+    if zap['status'] != 'SKIPPED':
+        total += zap.get('count') or 0
+    found = sum(1 for state in statuses if state == 'FINDINGS')
+    state = '❌ Technischer Fehler' if errors else ('⚠️ Sicherheitsfunde' if found else '✅ Alle statischen Scanner abgeschlossen')
     lines = [
-        '# DevSecOps V7 Security Report', '',
-        'Semgrep (SAST), Gitleaks (Secrets), Trivy (SCA), OWASP ZAP (DAST).', '',
-        '| Projekt | Semgrep | Gitleaks | Trivy |',
-        '|---|---:|---:|---:|',
+        '# 🔐 DevSecOps V7.1 · Security Report', '',
+        f'**{state}** · {len(projects)} Projekt(e) · '
+        f'{"Enforce aktiv" if enforce else "Report-Modus (Funde blockieren nicht)"}', '',
+        '## Scanner-Übersicht', '',
+        '| Projekt | Scanner | Methode | Status | Funde |',
+        '|:--|:--|:--|:--|--:|',
     ]
-    total = 0
-    errors = []
-    def fmt(scan: dict[str, Any]) -> str:
-        nonlocal total
-        if scan['status'] == 'SKIPPED':
-            return 'separater Job'
-        if scan['status'] == 'ERROR':
-            errors.append(f"{scan['tool']}: {scan['message']}")
-            return 'ERROR'
-        total += scan['count'] or 0
-        return str(scan['count'])
     for item in projects:
-        lines.append('| ' + ' | '.join([item['project'], *(fmt(s) for s in item['scans'])]) + ' |')
-    lines += ['', (f'**OWASP ZAP:** separater GitHub-Job' if zap['status'] == 'SKIPPED' else f'**OWASP ZAP ({zap.get("mode", "unbekannt")}, {zap.get("target", "project")}):** {fmt(zap)} Alerts'), '']
-    lines += [f'**Gesamtzahl (ueber verschiedene Kategorien, nicht dedupliziert): {total}**', '',
-              f'**Modus:** {"Enforce" if enforce else "Report-only"} (Scannerfehler schlagen IMMER fehl).', '']
+        for scan in item['scans']:
+            count = scan.get('count')
+            lines.append('| ' + ' | '.join((item['project'].replace('|','\\|'),
+                    scan['tool'], kinds.get(scan['tool'],'–'),
+                    labels.get(scan['status'],scan['status']),
+                    str(count) if count is not None else '–')) + ' |')
+    lines += ['', f'**OWASP ZAP:** separater GitHub-Job' if zap['status'] == 'SKIPPED'
+              else f'**OWASP ZAP ({zap.get("mode", "baseline")}, {zap.get("target", "project")}):** '
+                   f'{zap.get("count", "–")} Alerts · {labels.get(zap["status"], zap["status"])}',
+              '', f'**Gesamtzahl (ueber verschiedene Kategorien, nicht dedupliziert): {total}**',
+              '', 'Die Zahl addiert verschiedene Befundtypen – sie ist **kein Score** und enthält Duplikate.',
+              '', '## Erste Hinweise zu Findings', '']
+    had_examples = False
     for item in projects:
         for scan in item['scans']:
             if scan.get('examples'):
-                lines.append(f"- **{item['project']} / {scan['tool']}**: " + ', '.join(scan['examples']))
-    if zap.get('examples'):
-        lines.append('- **ZAP**: ' + ', '.join(zap['examples']))
+                had_examples = True
+                lines.append(f'- **{item["project"]} · {scan["tool"]}**: '
+                             + ', '.join(str(x).replace('`', "'") for x in scan['examples']))
+    if not had_examples:
+        lines.append('Keine Regel-IDs in dieser statischen Übersicht. Details stehen in den JSON-Berichten.')
     if errors:
-        lines += ['', '## Fehler bei Scannern oder Web-Start', '']
-        lines.extend('- ' + e for e in errors)
-    lines += ['', 'ZAP-Baseline ist PASSIV: kein gezielter XSS-/SQLi-Angriffstest. '
-              'Nur manuell gestarteter Full Scan ist aktiv und darf AUSSCHLIESSLICH '
-              'gegen eine isolierte Testinstanz mit Testdaten laufen.', '']
+        lines += ['', '## ❌ Technische Fehler', '']
+        lines.extend('- ' + msg.replace('|','/') for msg in errors)
+        lines += ['', 'Die technischen Fehler müssen behoben werden, bevor ein vollständiger Scan bestätigt werden kann.']
+    lines += ['', '## Was wurde geprüft?', '',
+              '- **Semgrep:** Quellcode-Sicherheitsregeln; Hinweise auf unsichere Programmiermuster.',
+              '- **Gitleaks:** Zugangsdaten/Secrets im Arbeitsverzeichnis (Werte geschwärzt).',
+              '- **Trivy:** bekannte Abhängigkeitslücken aus Manifesten/Lockfiles.',
+              '- **OWASP ZAP:** Web- und API-Laufzeitscan im separaten `ZAP`-Job.',
+              '', '## Nächste Schritte', '',
+              'JSON-Berichte und Logs liegen unter **Actions → Artifacts**. '
+              'Die HTML-Auswertung von ZAP erscheint im zugehörigen ZAP-Artefakt.',
+              'Baseline ist ein **passiver Sicherheitscheck**; für gezielte aktive Tests'
+              ' im isolierten Testsystem `workflow_dispatch → full` auswählen.',
+              '', 'Ein grüner Lauf besagt, dass die eingesetzten Prüfungen technisch'
+              ' abgeschlossen wurden – nicht, dass die Anwendung frei von Schwachstellen ist.', '']
     return '\n'.join(lines)
 
 

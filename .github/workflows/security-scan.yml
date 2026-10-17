@@ -1,4 +1,4 @@
-name: DevSecOps V7 - Security Pipeline
+name: DevSecOps V7.1 - Security Pipeline
 
 on:
   push:
@@ -139,5 +139,41 @@ jobs:
         with:
           name: v7-selftest-${{ github.run_number }}
           path: ${{ runner.temp }}/devsecops-selftest/
+          if-no-files-found: error
+          retention-days: 7
+
+  security-summary:
+    name: Gesamtauswertung aller Projekte
+    if: always()
+    needs: [discover, code-security, zap-project]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Scanner-Artefakte herunterladen
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          pattern: v7-*
+          merge-multiple: false
+          path: ${{ runner.temp }}/devsecops-collection
+      - name: Bewertbare Projektübersicht erstellen
+        env:
+          MATRIX: ${{ needs.discover.outputs.matrix }}
+          PREVIOUS_JOBS: ${{ needs.discover.result }} / ${{ needs.code-security.result }} / ${{ needs.zap-project.result }}
+          ENFORCE: ${{ inputs.enforce || false }}
+        run: |
+          python3 .github/devsecops/aggregate.py \
+            --input "${{ runner.temp }}/devsecops-collection" \
+            --output "${{ runner.temp }}/devsecops-overview" \
+            --matrix "$MATRIX" --enforce "$ENFORCE"
+      - name: Gesamtbericht zum Herunterladen
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: v7-overview-${{ github.run_number }}
+          path: ${{ runner.temp }}/devsecops-overview/
           if-no-files-found: error
           retention-days: 7

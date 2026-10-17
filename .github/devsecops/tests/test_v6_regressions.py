@@ -66,7 +66,7 @@ class Tests(unittest.TestCase):
         import yaml
         data=yaml.load((ROOT/'.github/workflows/security-scan.yml').read_text(),Loader=yaml.BaseLoader)
         jobs=data['jobs']
-        self.assertEqual(set(jobs),{'discover','code-security','zap-selftest','zap-project'})
+        self.assertEqual(set(jobs),{'discover','code-security','zap-selftest','zap-project','security-summary'})
         self.assertIn('inputs.selftest',jobs['zap-selftest']['if'])
         self.assertNotIn('if',jobs['zap-project'])
         self.assertIn('fromJSON',jobs['zap-project']['strategy']['matrix'])

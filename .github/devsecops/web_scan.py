@@ -23,6 +23,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import urlopen
+from reporting import zap_findings
 
 ZAP_IMAGE = os.environ.get('ZAP_IMAGE', 'ghcr.io/zaproxy/zaproxy:stable')
 
@@ -245,6 +246,7 @@ def parse_zap(data: Any) -> tuple[int, list[str], int]:
 
 def execute(root: Path, dest: Path, mode: str, selftest: bool = False, config: dict | None = None) -> dict[str, Any]:
     dest.mkdir(parents=True, exist_ok=True)
+    (dest / 'zap.error.txt').unlink(missing_ok=True)
     report = dest / 'zap.json'
     try:
         conf = config if config is not None else read_config(root, selftest)
@@ -308,27 +310,54 @@ def execute(root: Path, dest: Path, mode: str, selftest: bool = False, config: d
             outcomes.append(run_zap(target, targets, dest, mode, selftest))
         verify(conf)
         coverage={'profile':conf.get('_profile','custom'), 'preflight':conf.get('coverage',[]),
-                  'authentication':conf.get('auth_note','anonymous'), 'targets':outcomes}
+                  'authentication':conf.get('auth_note','anonymous'), 'seed_notes':conf.get('seed_notes',[]), 'targets':outcomes}
         (dest/'coverage.json').write_text(json.dumps(coverage,indent=2))
         count=sum(x['count'] for x in outcomes)
+        instances=sum(x['instances'] for x in outcomes)
+        risks = {key: sum(x['risks'][key] for x in outcomes) for key in outcomes[0]['risks']}
+        top_alerts = sorted((a for x in outcomes for a in x['top_alerts']),
+                            key=lambda a: (('Hoch','Mittel','Niedrig','Informativ','Unbekannt').index(a['risk']),
+                                           -a['instances']))[:12]
         return {'tool':'zap', 'status':'FINDINGS' if count else 'OK', 'count':count,
+                'instances': instances, 'risks': risks, 'top_alerts': top_alerts,
                 'examples':[], 'message':f'{mode}: {len(outcomes)} Ziel(e), siehe coverage.json',
                 'mode':mode, 'target':'selftest' if selftest else 'project'}
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
         return failed(dest, str(exc), mode)
     finally:
+        # Terminate the *whole* Node/pnpm/Next process group. Killing only the
+        # shell/group leader leaves child processes writing into .next, racing
+        # with the deletion of the disposable application directory (ENOTEMPTY).
         for proc in reversed(processes):
-            if proc.poll() is None:
-                try:
-                    os.killpg(proc.pid, signal.SIGTERM)
-                    proc.wait(timeout=6)
-                except (ProcessLookupError, subprocess.TimeoutExpired):
-                    try:
-                        os.killpg(proc.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
+            stop_process_group(proc)
         for stream in streams:
             stream.close()
+
+
+def stop_process_group(proc: subprocess.Popen) -> None:
+    """Always kill the session, even if the initial shell already exited."""
+    # start_new_session=True makes the child PID the process-group ID.
+    # Its parent shell may already have exited while Node children remain.
+    pgid = proc.pid
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        proc.wait(timeout=8)
+    except subprocess.TimeoutExpired:
+        pass
+    # npm/pnpm frequently spawn children that outlive the group leader.
+    # Always send SIGKILL after a short grace period, including if leader exited.
+    time.sleep(0.3)
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def run_zap(target, targets, dest, mode, selftest=False):
@@ -355,7 +384,7 @@ def run_zap(target, targets, dest, mode, selftest=False):
               '-t',url,'-J','zap.json','-r','zap.html','-I','-m','2','-T','5']
         if not selftest:
             args+=['--hook=/zap/private/zap_hooks.py']
-        if mode=='baseline':args+=['--autooff']
+        if mode == 'baseline': args+=['--autooff']
         if target.get('ajax'):args+=['-j','--ajax-spider']
         print(f'  [zap] {mode}: {url}',flush=True)
         try:
@@ -365,12 +394,19 @@ def run_zap(target, targets, dest, mode, selftest=False):
             if done.returncode not in (0,1,2):raise RuntimeError(f'ZAP {name}: Exit {done.returncode}; siehe Log')
             report=reports/'zap.json'
             if not report.is_file():raise RuntimeError(f'ZAP {name}: JSON-Report fehlt')
-            count,examples,instances=parse_zap(json.loads(report.read_text()))
+            data = json.loads(report.read_text(encoding='utf-8'))
+            count,examples,instances=parse_zap(data)
+            risks,top_alerts=zap_findings(data)
+            visited = None
             if not selftest:
                 coverage=json.loads((reports/'hook-coverage.json').read_text())
                 if not coverage.get('completed') or not coverage.get('seeded'):
                     raise RuntimeError('ZAP-Hooks/Abdeckungsprüfung unvollständig')
-            return {'name':name,'url':url,'count':count,'instances':instances}
+                visited = len(coverage.get('visited_urls') or [])
+                if not visited:
+                    raise RuntimeError('ZAP hat keine URLs erfasst; kein belegbarer Scan')
+            return {'name':name,'url':url,'count':count,'instances':instances,
+                    'risks':risks,'top_alerts':top_alerts,'visited':visited}
         finally:
             # Killing docker CLI on timeout does not stop its container.
             subprocess.run(['docker','rm','-f',container],stdout=subprocess.DEVNULL,

@@ -80,7 +80,7 @@ class TestStaticPipeline(unittest.TestCase):
         self.assertIn('push', conf['on'])
         self.assertIn('pull_request', conf['on'])
         self.assertIn('workflow_dispatch', conf['on'])
-        self.assertEqual(set(conf['jobs']), {'discover', 'code-security', 'zap-selftest', 'zap-project'})
+        self.assertEqual(set(conf['jobs']), {'discover', 'code-security', 'zap-selftest', 'zap-project', 'security-summary'})
 
 
 class TestZapPipeline(unittest.TestCase):
@@ -133,7 +133,7 @@ class TestZapPipeline(unittest.TestCase):
                 def fake_subprocess(argv, **kw):
                     if argv[1]=='rm':return mock.Mock(returncode=0)
                     stage=Path(next(x for x in argv if x.endswith(':/zap/wrk/:rw')).split(':/zap/wrk/')[0])
-                    (stage / 'hook-coverage.json').write_text(json.dumps({'completed':True,'seeded':[{}]}))
+                    (stage / 'hook-coverage.json').write_text(json.dumps({'completed':True,'seeded':[{}],'visited_urls':['http://127.0.0.1:39021/']}))
                     (stage / 'zap.json').write_text(json.dumps({'site': [{'alerts': [
                         {'alertRef': '10020', 'instances': [{}]}]}]}))
                     (stage / 'zap.html').write_text('html')
