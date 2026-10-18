@@ -1,119 +1,80 @@
-"""Security report presentation; no credentials, payloads or secrets are rendered."""
-from __future__ import annotations
-
+"""Reproducible review-friendly Markdown for Dalfox v3."""
 import json
 from pathlib import Path
 
 
-STATUS = {'OK': '✅ Erfolgreich', 'FINDINGS': '⚠️ Funde',
-          'ERROR': '❌ Technischer Fehler', 'SKIPPED': '➖ Übersprungen'}
-RISKS = ('Hoch', 'Mittel', 'Niedrig', 'Informativ')
+def esc(value):
+    return str(value).replace('|', '\\|').replace('`', "'").replace('\n', ' ').replace('\r',' ')
 
 
-def cell(value):
-    return str(value).replace('|', '\\|').replace('\n', ' ').replace('`', "'")
-
-
-def risk_level(alert):
-    number = str(alert.get('riskcode', ''))
-    if number == '3':
-        return 'Hoch'
-    if number == '2':
-        return 'Mittel'
-    if number == '1':
-        return 'Niedrig'
-    if number == '0':
-        return 'Informativ'
-    desc = str(alert.get('riskdesc') or '').lower()
-    for pattern, label in (('high', 'Hoch'), ('medium', 'Mittel'),
-                           ('low', 'Niedrig'), ('informational', 'Informativ')):
-        if desc.startswith(pattern):
-            return label
-    return 'Unbekannt'
-
-
-def zap_findings(data):
-    risks = {name: 0 for name in (*RISKS, 'Unbekannt')}
-    top = []
-    for site in data.get('site', []):
-        for alert in site.get('alerts', []):
-            risk = risk_level(alert)
-            risks[risk] += 1
-            top.append({'id': str(alert.get('pluginid') or alert.get('alertRef') or '?'),
-                        'name': str(alert.get('name') or alert.get('alert') or 'Unbenannter Befund')[:140],
-                        'risk': risk,
-                        'instances': len(alert.get('instances') or [])})
-    order = dict(zip((*RISKS, 'Unbekannt'), range(5)))
-    return risks, sorted(top, key=lambda a: (order[a['risk']], -a['instances'], a['name']))[:12]
-
-
-def zap_markdown(result, directory: Path, enforce=False):
+def dalfox_markdown(result: dict, report_dir: Path, enforce: bool = False) -> str:
     state = result.get('status', 'ERROR')
-    count = result.get('count')
-    total = count if isinstance(count, int) else 'nicht ermittelt'
-    project = result.get('project', '.')
-    mode = result.get('mode', 'baseline')
-    lines = [
-        f'# 🔐 OWASP ZAP – {cell(project)}', '',
-        f'**{STATUS.get(state, state)}** · Profil `{cell(result.get("profile", "custom"))}`'
-        f' · `{mode}` · {"Befunde blockieren" if enforce else "Report-Modus"}', '',
-        '| Kennzahl | Ergebnis |', '|:--|--:|',
-        f'| ZAP-Warnungstypen / Alerts | **{total}** |',
-        f'| Betroffene URL-/Parameter-Vorkommen | **{result.get("instances", "–")}** |',
-    ]
-    risks = result.get('risks') or {}
-    for risk in RISKS:
-        lines.append(f'| {risk} | {risks.get(risk, "–")} |')
-    lines += ['', '## Geprüfte Webanwendung', '']
-    coverage_file = directory / 'coverage.json'
-    if coverage_file.exists():
-        try:
-            coverage = json.loads(coverage_file.read_text(encoding='utf-8'))
-            lines += [f'**Testprofil:** `{cell(coverage.get("profile", "custom"))}`  ',
-                      f'**Anmeldung:** {cell(coverage.get("authentication", "anonym"))}', '']
-            lines += ['| Ziel | HTTP-Ziel | Alarmtypen | Vorkommen | Besuchte URLs |',
-                      '|:--|:--|--:|--:|--:|']
-            for item in coverage.get('targets', []):
-                lines.append('| ' + ' | '.join(map(cell, (item.get('name','web'),
-                    item.get('url','?'), item.get('count',0), item.get('instances',0),
-                    item.get('visited', '–')))) + ' |')
-            checks = coverage.get('preflight') or []
-            succeeded = [x for x in checks if x.get('status', 0) in (200,201,202,204)]
-            lines += ['', f'**HTTP-Vorabprüfung:** {len(succeeded)} erfolgreiche Routen'
-                      f' von {len(checks)} geprüften Einstiegen.']
-            omitted = [x for x in checks if x.get('status') not in (200,201,202,204)]
-            if omitted:
-                lines += ['', '<details><summary>Übersprungene / abweichende Einstiegsrouten</summary>', '']
-                for item in omitted[:20]:
-                    lines.append(f'- `{cell(item.get("url", "?"))}` → HTTP {cell(item.get("status", "?"))}')
-                lines += ['', '</details>']
-        except (ValueError, OSError, TypeError) as exc:
-            lines += [f'Abdeckungsdatei konnte nicht gelesen werden: {cell(exc)}']
-    else:
-        lines += ['**Keine bestätigte Scanabdeckung.** Bei Fehlern die Start- und ZAP-Logs prüfen.']
-    top = result.get('top_alerts') or []
-    if top:
-        lines += ['', '## Wichtigste Sicherheitsfunde', '',
-                  '| Risiko | Regel | Name | Vorkommen |', '|:--|:--|:--|--:|']
-        for finding in top:
-            lines.append('| ' + ' | '.join(map(cell, (finding['risk'], finding['id'],
-                finding['name'], finding['instances']))) + ' |')
-        lines += ['', 'Die Tabelle enthält **Regel-/Risikometadaten**, keine Cookies, JWTs oder Angriffspayloads.']
+    name = esc(result.get('project', '.'))
+    banner = {'OK': '✅ Dalfox technisch abgeschlossen – keine Funde in getesteten Eingaben',
+              'FINDINGS': '⚠️ Dalfox hat Hinweise / mögliche XSS-Schwachstellen gefunden',
+              'ERROR': '❌ Technischer Scanfehler – keine Entwarnung möglich'}.get(state, state)
+    lines = [f'# 🦊 Dalfox XSS-Scan · {name}', '',f'**{banner}**', '',
+             f'Profil: `{esc(result.get("profile", "custom"))}` · '
+             f'Bewertungsmodus: {"Enforce" if enforce else "Report-only"}', '',
+             '## Kurzüberblick', '',
+             '| Kennzahl | Wert |', '|:--|--:|',
+             f'| HTML-Testziele konfiguriert | {result.get("candidates",0)} |',
+             f'| **Mit Dalfox geprüft** | **{result.get("scanned",0)}** |',
+             f'| Übersprungen | {result.get("skipped",0)} |',
+             f'| **Dalfox-HTTP-Anfragen** | **{result.get("requests",0)}** |',
+             f'| Fehlgeschlagene Dalfox-HTTP-Anfragen | {result.get("failed_requests",0)} |',
+             f'| **Sicherheitsbefunde insgesamt** | **{result.get("count") if result.get("count") is not None else "–"}** |',
+             f'| Hoch eingestufte XSS-Befunde [V] | {result.get("by_type",{}).get("V",0)} |',
+             f'| AST-Hinweise [A] | {result.get("by_type",{}).get("A",0)} |',
+             f'| Reflektionen [R] | {result.get("by_type",{}).get("R",0)} |',
+             f'| Informative Hinweise [I] | {result.get("by_type",{}).get("I",0)} |', '']
     if state == 'ERROR':
-        lines += ['', '## Fehlerursache', '',
-                  '> ' + cell(result.get('message','Unbekannter Fehler')), '',
-                  'Siehe `zap.error.txt`, `*-install.log`, `*-setup.log`, `*-server.log` und `*-zap-run.log` im Artefakt.']
+        lines += ['## Technischer Fehler', '',esc(result.get('message', 'Unbekannter Fehler')),
+                  '', 'Bitte zuerst Installations-, Server- und Setup-Logs prüfen. '
+                  'Keine erfolgreichen Scans dürfen aus diesem Ergebnis abgeleitet werden.', '']
     else:
-        lines += ['', '## Einordnung', '',
-                  ('Die Anwendung wurde lokal gestartet und ZAP hat Berichte erzeugt.'
-                   if state == 'OK' else 'Die Webanwendung wurde gescannt; erkannte Auffälligkeiten müssen bewertet werden.'),
-                  ('**Baseline:** passiver HTTP-Sicherheitscheck, kein vollständiger SQLi-/XSS-Pentest.'
-                   if mode == 'baseline' else '**Full Scan:** aktive Prüfungen gegen isolierte Testkopie mit Testdaten.'),
-                  'Ein erfolgreicher Lauf ist **keine Garantie für eine sichere Anwendung**.']
-    lines += ['', '## Artefakte', '',
-              '`coverage.json` · `*-zap.html` · `*-zap.json` · `*-hook-coverage.json` · `*-zap-run.log`',
-              '', '*Die einzelnen Berichte stehen nach Ende des Workflows unter Actions → Artifacts.*', '']
-    if (directory / 'cleanup-warning.txt').exists():
-        lines += ['**Hinweis:** Temporäre Dateien konnten nach dem Scan nicht vollständig gelöscht werden. '
-                  'Der GitHub-Runner wird anschließend verworfen.', '']
+        lines += ['## XSS-Befunde', '',
+                  '| Typ | Risiko | Parameter | Methode | Eingabepunkt | Beleg |',
+                  '|:--|:--|:--|:--|:--|:--|']
+        findings = result.get('findings', [])
+        if findings:
+            for f in findings[:50]:
+                lines.append('| ' + ' | '.join(esc(f.get(key, '')) for key in
+                             ('type', 'risk', 'param', 'method', 'target', 'evidence')) + ' |')
+            if len(findings) > 50:
+                lines.append(f'Weitere {len(findings)-50} Funde im JSON-Artefakt.')
+        else:
+            lines.append('| – | – | – | – | – | Kein XSS-Indikator für die getesteten Eingaben |')
+        lines += ['', '## Reale Dalfox-Abdeckung', '',
+                  '| Ziel / Parameter | Ergebnis | HTTP | Dalfox-Anfragen | Begründung |',
+                  '|:--|:--|--:|--:|:--|']
+        for row in result.get('tested', []):
+            lines.append('| ' + ' | '.join(esc(v) for v in (
+                row.get('url'), row.get('status'), row.get('http','–'),
+                row.get('requests','–'), row.get('reason','–'))) + ' |')
+    cov = report_dir / 'coverage.json'
+    if cov.exists():
+        try:
+            data = json.loads(cov.read_text(encoding='utf-8'))
+            lines += ['', '## Start- und Anmeldungskontrolle', '',
+                      '**Testbenutzer:** ' + esc(data.get('authentication', 'nicht eingerichtet')),
+                      '', f'**Vorab geprüfte HTTP-Routen:** {len(data.get("preflight",[]))}', '',
+                      '| Route | HTTP-Status | Authentifiziert |','|:--|--:|:--|']
+            for row in data.get('preflight', []):
+                lines.append('| ' + ' | '.join(esc(v) for v in (
+                    row.get('url'), row.get('status'), 'Ja' if row.get('authenticated') else 'Nein'))+' |')
+            if data.get('seed_notes'):
+                lines += ['', '**Testdaten-Hinweise:** ' + '; '.join(esc(v) for v in data['seed_notes'])]
+        except (ValueError, OSError):
+            lines += ['', 'coverage.json ist nicht lesbar.']
+    lines += ['', '## Interpretation für die Studienarbeit', '',
+              '- **[V]** Dalfox bewertet eine XSS-Ausnutzbarkeit als wahrscheinlich. Kein Browser wird ausgeführt; Befund manuell prüfen.',
+              '- **[A]** mögliche Source-Sink-Beziehung im JavaScript (statische AST-Analyse).',
+              '- **[R]** reflektierter Parameter – allein noch **kein** bestätigtes XSS.',
+              '- **[I]** informativer Hinweis.',
+              '- **SKIP** bedeutet nicht getestet. Nur tatsächlich erfolgreiche HTML-Ziele zählen zur Abdeckung.',
+              '- Dalfox untersucht gezielte GET-/Query-Eingaben auf einer **isolierten lokalen App-Kopie**; '
+              'authentifizierte POST-Formulare / gespeichertes XSS werden hier nicht automatisch abgedeckt.',
+              '- 0 Funde bedeutet **nicht**, dass alle XSS-Risiken ausgeschlossen sind.', '',
+              '*Artefakte: summary.json, summary.md, coverage.json und Dalfox-JSON pro Ziel.*', '']
     return '\n'.join(lines)

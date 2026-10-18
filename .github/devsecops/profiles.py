@@ -65,7 +65,7 @@ def configuration(root, profile, runtime):
     service = {'name':'web', 'directory':'.', 'install':'auto', 'start':'auto',
                'ready_url':base+'/login', 'env':env, 'required_env':[]}
     conf = {'target_url':base+'/', 'services':[service], '_profile':profile,
-            '_runtime':str(runtime), 'zap_ajax_spider':True}
+            '_runtime':str(runtime), 'scan_scope':'loopback-only'}
     if profile == 'library':
         api = 'http://localhost:5000'
         env = {'PORT':'5000', 'SQLITE_FILE':str(runtime/'library.sqlite'),
@@ -78,8 +78,8 @@ def configuration(root, profile, runtime):
              'ready_url':'http://127.0.0.1:5173/', 'env':{}}]
         conf['target_url'] = 'http://127.0.0.1:5173/'
         conf['targets'] = [
-            {'name':'frontend', 'url':conf['target_url'], 'routes':['/'], 'ajax':True},
-            {'name':'api', 'url':api+'/', 'routes':['/', '/books', '/books?title=Security'], 'ajax':False}]
+            {'name':'frontend', 'url':conf['target_url'], 'routes':['/'], 'input_queries':[{'path':'/', 'param':'q'}]},
+            {'name':'api', 'url':api+'/', 'routes':['/', '/books', '/books?title=Security'], 'input_queries':[{'path':'/books', 'param':'title'}], 'protected_routes':['/user/reservations', '/user/account']}]
     else:
         # Dedicated config overrides the hardcoded DB path in the uploaded drizzle.config.ts.
         (root/'devsecops.drizzle.config.ts').write_text(
@@ -96,5 +96,5 @@ def configuration(root, profile, runtime):
         routes += (['/dashboard','/dashboard/tasks','/dashboard/shopping','/dashboard/flatmates',
                     '/dashboard/settings','/api/flatmates','/api/flatmates/users','/api/tasks','/api/shopping','/api/user']
                    if profile == 'flatmate' else ['/home'])
-        conf['targets'] = [{'name':'web', 'url':base+'/', 'routes':routes, 'ajax':True}]
+        conf['targets'] = [{'name':'web', 'url':base+'/', 'routes':routes, 'input_queries':([{'path':'/dashboard/tasks', 'param':'q'}, {'path':'/dashboard/shopping','param':'search'}] if profile == 'flatmate' else [{'path':'/home','param':'q'}]), 'protected_routes':(['/api/flatmates', '/api/tasks', '/api/shopping', '/api/user'] if profile == 'flatmate' else [])}]
     return conf

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Universeller, read-only DevSecOps-Scanner fuer lokale Projektordner.
 
-Voraussetzung: Python 3.10+ und Docker. Keine Ausfuehrung von Projekt-Code.
-Vier Scanner: Semgrep, Gitleaks, Trivy und OWASP ZAP (DAST).
+Voraussetzung fuer statische Scanner: Python 3.12 und Docker.
+Drei Scanner: Semgrep, Gitleaks und Trivy. Laufzeitpruefung separat.
 """
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ import sys
 from typing import Any
 import secrets
 import string
-from web_scan import execute as web_execute
 
 ROOT = Path(__file__).resolve().parents[2]
 # Versionierte Images; per Umgebungsvariable ueberschreibbar.
@@ -197,24 +196,24 @@ def safe_slug(path: str) -> str:
     return 'root' if path == '.' else re.sub(r'[^a-zA-Z0-9._-]', '_', path).strip('._')
 
 
-def markdown_summary(projects: list[dict[str, Any]], zap: dict[str, Any], enforce: bool) -> str:
+def markdown_summary(projects: list[dict[str, Any]], dalfox: dict[str, Any], enforce: bool) -> str:
     """GitHub Actions friendly overview; never print secret values or payloads."""
     labels = {'OK':'✅ OK', 'FINDINGS':'⚠️ Funde', 'ERROR':'❌ Fehler',
               'SKIPPED':'➖ Separater Job'}
     kinds = {'semgrep':'SAST · Code', 'gitleaks':'Secrets · Zugangsdaten',
-             'trivy':'SCA · Abhängigkeiten', 'zap':'DAST · HTTP'}
+             'trivy':'SCA · Abhängigkeiten', 'dalfox':'DAST · XSS'}
     statuses = [s['status'] for item in projects for s in item['scans']]
     errors = [f"{item['project']} / {s['tool']}: {s.get('message', 'Technischer Fehler')}"
               for item in projects for s in item['scans'] if s['status'] == 'ERROR']
-    if zap['status'] == 'ERROR':
-        errors.append('ZAP: ' + zap.get('message', 'Technischer Fehler'))
+    if dalfox['status'] == 'ERROR':
+        errors.append('Dalfox (XSS): ' + dalfox.get('message', 'Technischer Fehler'))
     total = sum((s.get('count') or 0) for item in projects for s in item['scans'])
-    if zap['status'] != 'SKIPPED':
-        total += zap.get('count') or 0
+    if dalfox['status'] != 'SKIPPED':
+        total += dalfox.get('count') or 0
     found = sum(1 for state in statuses if state == 'FINDINGS')
     state = '❌ Technischer Fehler' if errors else ('⚠️ Sicherheitsfunde' if found else '✅ Alle statischen Scanner abgeschlossen')
     lines = [
-        '# 🔐 DevSecOps V7.1 · Security Report', '',
+        '# 🔐 DevSecOps V9 · Security Report', '',
         f'**{state}** · {len(projects)} Projekt(e) · '
         f'{"Enforce aktiv" if enforce else "Report-Modus (Funde blockieren nicht)"}', '',
         '## Scanner-Übersicht', '',
@@ -228,9 +227,8 @@ def markdown_summary(projects: list[dict[str, Any]], zap: dict[str, Any], enforc
                     scan['tool'], kinds.get(scan['tool'],'–'),
                     labels.get(scan['status'],scan['status']),
                     str(count) if count is not None else '–')) + ' |')
-    lines += ['', f'**OWASP ZAP:** separater GitHub-Job' if zap['status'] == 'SKIPPED'
-              else f'**OWASP ZAP ({zap.get("mode", "baseline")}, {zap.get("target", "project")}):** '
-                   f'{zap.get("count", "–")} Alerts · {labels.get(zap["status"], zap["status"])}',
+    lines += ['', f'**Dalfox (XSS):** separater GitHub-Job' if dalfox['status'] == 'SKIPPED'
+              else f'**Dalfox (XSS):** {dalfox.get("count","–")} Prüfauffälligkeiten · {labels.get(dalfox["status"],dalfox["status"])}',
               '', f'**Gesamtzahl (ueber verschiedene Kategorien, nicht dedupliziert): {total}**',
               '', 'Die Zahl addiert verschiedene Befundtypen – sie ist **kein Score** und enthält Duplikate.',
               '', '## Erste Hinweise zu Findings', '']
@@ -251,27 +249,23 @@ def markdown_summary(projects: list[dict[str, Any]], zap: dict[str, Any], enforc
               '- **Semgrep:** Quellcode-Sicherheitsregeln; Hinweise auf unsichere Programmiermuster.',
               '- **Gitleaks:** Zugangsdaten/Secrets im Arbeitsverzeichnis (Werte geschwärzt).',
               '- **Trivy:** bekannte Abhängigkeitslücken aus Manifesten/Lockfiles.',
-              '- **OWASP ZAP:** Web- und API-Laufzeitscan im separaten `ZAP`-Job.',
+              '- **Dalfox (XSS):** XSS-Scan der lokalen HTML-Query-Eingaben im separaten Dalfox-Job.',
               '', '## Nächste Schritte', '',
               'JSON-Berichte und Logs liegen unter **Actions → Artifacts**. '
-              'Die HTML-Auswertung von ZAP erscheint im zugehörigen ZAP-Artefakt.',
-              'Baseline ist ein **passiver Sicherheitscheck**; für gezielte aktive Tests'
-              ' im isolierten Testsystem `workflow_dispatch → full` auswählen.',
+              'Die Dalfox-XSS-Prüfungen finden im separaten `dalfox-project`-Job statt.',
+              'Dalfox ist ein etabliertes XSS-Werkzeug. Details und Abdeckung im separaten Dalfox-Report.',
               '', 'Ein grüner Lauf besagt, dass die eingesetzten Prüfungen technisch'
               ' abgeschlossen wurden – nicht, dass die Anwendung frei von Schwachstellen ist.', '']
     return '\n'.join(lines)
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description='V7: 3 statische Scanner + ZAP gegen lokal gestartete Web-App')
+    parser = argparse.ArgumentParser(description='V9: 3 statische Scanner auf unveraendertem Quellcode')
     parser.add_argument('--static-only', action='store_true', help='Nur Semgrep/Gitleaks/Trivy')
     parser.add_argument('--projects', default='.', help='Kommagetrennte relative Ordner, z.B. . oder examples/01-js-auth,examples/02-python-api')
-    parser.add_argument('--mode', choices=['baseline', 'full'], default='baseline')
     parser.add_argument('--output', type=Path, default=None,
                         help='Reportordner AUSSERHALB des zu scannenden Projektbaums')
     parser.add_argument('--enforce', choices=['true', 'false'], default='false')
-    parser.add_argument('--zap-selftest', choices=['true', 'false'], default='false',
-                        help='ZAP gegen lokale Python-Testseite statt echter Web-App ausfuehren')
     parser.add_argument('--demo-secret', choices=['true', 'false'], default='false',
                         help='Nur fuer Live-Demo: temporaerer, ungueltiger Schluessel im ersten Projekt')
     args = parser.parse_args()
@@ -290,9 +284,6 @@ def main() -> int:
         if output == path or output.is_relative_to(path):
             print('Fehler: Reportordner darf nicht innerhalb eines Scan-Projektordners liegen.', file=sys.stderr)
             return 2
-    if args.mode == 'full' and os.environ.get('GITHUB_ACTIONS') == 'true' and os.environ.get('GITHUB_EVENT_NAME') != 'workflow_dispatch':
-        print('Full Scan ist nur bei manuellem workflow_dispatch zulaessig.', file=sys.stderr)
-        return 2
     if not shutil.which('docker'):
         print('Fehler: Docker CLI nicht gefunden. Installiere Docker oder nutze GitHub Actions.', file=sys.stderr)
         return 2
@@ -309,13 +300,13 @@ def main() -> int:
         demo_file.write_text('test_token = "' + fake_token + '"\n', encoding='utf-8')
         print('Demo-Modus: ungueltiger Test-Token voruebergehend erzeugt (Wert verborgen).', flush=True)
     try:
-        return execute_scans(projects, output, enforce, args.mode, args.zap_selftest == 'true', static_only=args.static_only)
+        return execute_scans(projects, output, enforce)
     finally:
         if demo_file is not None:
             demo_file.unlink(missing_ok=True)
 
 
-def execute_scans(projects: list[tuple[str, Path]], output: Path, enforce: bool, mode: str, selftest: bool = False, static_only: bool = False) -> int:
+def execute_scans(projects: list[tuple[str, Path]], output: Path, enforce: bool) -> int:
     output.mkdir(parents=True, exist_ok=True)
     results = []
     for n, (name, path) in enumerate(projects, 1):
@@ -330,22 +321,17 @@ def execute_scans(projects: list[tuple[str, Path]], output: Path, enforce: bool,
                   f'({outcome["count"] if outcome["count"] is not None else "?"} Findings)',
                   flush=True)
         results.append({'project': name, 'scans': scans})
-    if static_only:
-        zap = {'tool':'zap','status':'SKIPPED','count':None,'examples':[],
-               'message':'Separater GitHub-Job', 'mode':mode}
-    else:
-        print('\n=== OWASP ZAP: temporaere Webanwendung starten ===', flush=True)
-        zap = web_execute(ROOT, output / 'web-zap', mode, selftest=selftest)
-    print(f'  [zap] {zap["status"]} ({zap["count"] if zap["count"] is not None else "?"} Alerts)', flush=True)
-    markdown = markdown_summary(results, zap, enforce)
+    dalfox = {'tool':'dalfox','status':'SKIPPED','count':None,'examples':[],
+            'message':'Separater GitHub-Job'}
+    markdown = markdown_summary(results, dalfox, enforce)
     (output / 'summary.md').write_text(markdown, encoding='utf-8')
-    (output / 'summary.json').write_text(json.dumps({'projects': results, 'zap': zap}, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    (output / 'summary.json').write_text(json.dumps({'projects': results, 'dalfox': dalfox}, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     print('\n' + markdown, flush=True)
     if os.environ.get('GITHUB_STEP_SUMMARY'):
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as handle:
             handle.write(markdown + '\n')
-    errored = zap['status'] == 'ERROR' or any(s['status'] == 'ERROR' for item in results for s in item['scans'])
-    found = zap['status'] == 'FINDINGS' or any(s['status'] == 'FINDINGS' for item in results for s in item['scans'])
+    errored = dalfox['status'] == 'ERROR' or any(s['status'] == 'ERROR' for item in results for s in item['scans'])
+    found = dalfox['status'] == 'FINDINGS' or any(s['status'] == 'FINDINGS' for item in results for s in item['scans'])
     return 2 if errored else (1 if enforce and found else 0)
 
 

@@ -1,4 +1,4 @@
-name: DevSecOps V7.1 - Security Pipeline
+name: DevSecOps V9 - Security Pipeline (Dalfox XSS)
 
 on:
   push:
@@ -9,12 +9,6 @@ on:
         description: 'auto erkennt die drei Projekte; alternativ . oder ordner1,ordner2'
         type: string
         default: auto
-        required: true
-      zap_mode:
-        description: 'baseline = passiv; full = aktive Angriffe auf frische lokale Testkopie'
-        type: choice
-        options: [baseline, full]
-        default: baseline
         required: true
       enforce:
         description: 'Auch bei Sicherheitsfunden fehlschlagen (technische Fehler immer rot)'
@@ -29,7 +23,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: devsecops-v7-${{ github.workflow }}-${{ github.ref }}
+  group: devsecops-v9-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -81,13 +75,13 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: v7-static-${{ matrix.id }}-${{ github.run_number }}
+          name: v9-static-${{ matrix.id }}-${{ github.run_number }}
           path: ${{ runner.temp }}/devsecops-static/
           if-no-files-found: error
           retention-days: 7
 
-  zap-project:
-    name: ZAP - ${{ matrix.path }}
+  dalfox-project:
+    name: Dalfox XSS - ${{ matrix.path }}
     needs: discover
     strategy:
       fail-fast: false
@@ -104,24 +98,25 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
-      - name: Echte Anwendung mit Testdaten starten und scannen
+      - name: Dalfox v3.2.4 installieren und SHA256 prüfen
+        run: bash .github/devsecops/install_dalfox.sh
+      - name: Echte Anwendung mit Testdaten starten und XSS mit Dalfox prüfen
         env:
           PROJECT: ${{ matrix.path }}
-          ZAP_MODE: ${{ inputs.zap_mode || 'baseline' }}
           ENFORCE: ${{ inputs.enforce || false }}
-          REPORTS: ${{ runner.temp }}/devsecops-zap
-        run: python3 .github/devsecops/project_scan.py --project "$PROJECT" --mode "$ZAP_MODE" --enforce "$ENFORCE" --output "$REPORTS"
-      - name: ZAP-Reports und Startdiagnose
+          REPORTS: ${{ runner.temp }}/devsecops-dalfox
+        run: python3 .github/devsecops/project_scan.py --project "$PROJECT" --enforce "$ENFORCE" --output "$REPORTS"
+      - name: Dalfox-Reports und Startdiagnose
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: v7-zap-${{ matrix.id }}-${{ github.run_number }}
-          path: ${{ runner.temp }}/devsecops-zap/
+          name: v9-dalfox-${{ matrix.id }}-${{ github.run_number }}
+          path: ${{ runner.temp }}/devsecops-dalfox/
           if-no-files-found: error
           retention-days: 7
 
-  zap-selftest:
-    name: Optionaler Scanner-Selbsttest
+  dalfox-selftest:
+    name: Optionaler Dalfox-Selbsttest
     if: github.event_name == 'workflow_dispatch' && inputs.selftest
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -129,15 +124,19 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
+      - name: Dalfox v3.2.4 installieren und SHA256 prüfen
+        run: bash .github/devsecops/install_dalfox.sh
       - name: Isolierte Testseite scannen
         env:
           REPORTS: ${{ runner.temp }}/devsecops-selftest
-        run: python3 .github/devsecops/web_scan.py --root . --target selftest --mode baseline --output "$REPORTS"
+        run: |
+          python3 .github/devsecops/project_scan.py --selftest --output "$REPORTS"
+          python3 .github/devsecops/verify_selftest.py "$REPORTS/summary.json"
       - name: Selftest-Reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: v7-selftest-${{ github.run_number }}
+          name: v9-selftest-${{ github.run_number }}
           path: ${{ runner.temp }}/devsecops-selftest/
           if-no-files-found: error
           retention-days: 7
@@ -145,24 +144,24 @@ jobs:
   security-summary:
     name: Gesamtauswertung aller Projekte
     if: always()
-    needs: [discover, code-security, zap-project]
+    needs: [discover, code-security, dalfox-project]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - name: Scanner-Artefakte herunterladen
+      - name: Scanner- und Dalfox-Artefakte herunterladen
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         continue-on-error: true
         with:
-          pattern: v7-*
+          pattern: v9-*
           merge-multiple: false
           path: ${{ runner.temp }}/devsecops-collection
       - name: Bewertbare Projektübersicht erstellen
         env:
           MATRIX: ${{ needs.discover.outputs.matrix }}
-          PREVIOUS_JOBS: ${{ needs.discover.result }} / ${{ needs.code-security.result }} / ${{ needs.zap-project.result }}
+          PREVIOUS_JOBS: ${{ needs.discover.result }} / ${{ needs.code-security.result }} / ${{ needs.dalfox-project.result }}
           ENFORCE: ${{ inputs.enforce || false }}
         run: |
           python3 .github/devsecops/aggregate.py \
@@ -173,7 +172,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: v7-overview-${{ github.run_number }}
+          name: v9-overview-${{ github.run_number }}
           path: ${{ runner.temp }}/devsecops-overview/
           if-no-files-found: error
           retention-days: 7

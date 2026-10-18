@@ -11,5 +11,17 @@
       "env": {}
     }
   ],
-  "zap_ajax_spider": false
+  "scan_scope": "loopback-only",
+  "targets": [
+    {
+      "name": "web",
+      "url": "http://127.0.0.1:3000/",
+      "input_queries": [
+        {
+          "path": "/",
+          "param": "q"
+        }
+      ]
+    }
+  ]
 }

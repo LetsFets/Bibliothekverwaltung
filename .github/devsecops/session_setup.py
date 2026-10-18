@@ -95,6 +95,8 @@ def prepare(conf):
         else:
             notes.append('Bibliothek: keine Bücher zum Reservieren vorhanden; API bleibt scanbar')
         conf['targets'][1]['headers'] = headers
+        conf['targets'][1]['post_inputs'] = [{'path':'/auth/login', 'field':'username',
+                'body':{'username':'invalid','password':'not-the-user-password'}}]
         conf['auth_note'] = 'JWT-Testnutzer erstellt; Frontend anonym, API mit Test-JWT.'
     else:
         account = request(base+'/api/auth/sign-up/email',
@@ -114,9 +116,16 @@ def prepare(conf):
             shopping = {'description':'Security Test Einkauf'}
             optional_seed(base+'/api/tasks', task)
             optional_seed(base+'/api/shopping', shopping)
+            conf['targets'][0]['post_inputs'] = [
+                {'path':'/api/tasks','field':'description','body':task,'authenticated':True},
+                {'path':'/api/shopping','field':'description','body':shopping,'authenticated':True}]
             conf['targets'][0]['requests'] = [
                 {'path':'/api/tasks', 'method':'POST', 'body':json.dumps(task)},
                 {'path':'/api/shopping', 'method':'POST', 'body':json.dumps(shopping)}]
+        if profile == 'entertainment':
+            conf['targets'][0]['post_inputs'] = [
+                {'path':'/api/auth/sign-up/email','field':'name', 'unique_email':True,
+                 'body':{'name':'probe','email':'probe@example.test','password':secrets.token_urlsafe(24)}}]
         headers = {'Cookie':'; '.join(c.name+'='+c.value for c in jar)}
         if not headers['Cookie']:
             raise RuntimeError('Better Auth: Session-Cookie fehlt')
